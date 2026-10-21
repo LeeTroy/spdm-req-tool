@@ -107,10 +107,12 @@ class Model:
     def __init__(self):
         self.root = Node([("root", C_NORMAL)], expanded=True)
         self.run = None
+        self.round = None
         self.step = None
         self.stats = {}
         self.runs = 0
         self.mctp = [0, 0]
+        self.rounds_done = 0
         self.done = None
 
     def start_run(self, title):
@@ -119,13 +121,18 @@ class Model:
         self.runs += 1
         self.run = self.root.add(Node([("Run #%d " % self.runs, C_RUN), (title, C_RUN)],
                                       expanded=True, kind="run", detail=title))
+        self.round = None
         self.step = None
         self.mctp = [0, 0]
+        self.rounds_done = 0
         self.done = None
         return self.run
 
+    def _parent(self):
+        return self.round or self.run or self.root
+
     def _container(self):
-        return self.step or self.run or self.root
+        return self.step or self._parent()
 
     def log(self, level, msg):
         role = {"fail": C_ERR, "warn": C_WARN, "ok": C_DIM}.get(level, C_DIM)
@@ -140,12 +147,36 @@ class Model:
                     any(c.kind == "step" for c in self.run.children):
                 self.start_run("recorded run")
             self.run.add(Node([(ev.get("msg", ""), C_DIM)], detail=ev.get("msg")))
+        elif kind == "round_begin":
+            for r in self.run.children:          # fold finished rounds
+                if r.kind == "round":
+                    r.expanded = False
+            n = ev.get("round", 0)
+            total = ev.get("count", 0)
+            label = "Round %d%s" % (n, "/%d" % total if total else "")
+            self.round = self.run.add(Node([(label, C_RUN), ("  " + ev.get("time", ""), C_DIM)],
+                                           expanded=True, kind="round",
+                                           detail="%s at %s, every %ss" % (
+                                               label, ev.get("time", ""), ev.get("interval"))))
+            self.step = None
+        elif kind == "round_end":
+            if self.round is not None:
+                st = ev.get("status", "?")
+                badge, role = STATUS_BADGE.get(st, ("?", C_NORMAL))
+                self.round.segs = self.round.segs[:2] + [
+                    ("   [", C_NORMAL), (badge, role), ("] ", C_NORMAL),
+                    ("%d passed, %d warn, %d failed" % (ev.get("passed", 0), ev.get("warned", 0),
+                                                       ev.get("failed", 0)), C_DIM)]
+                self.round.expanded = st in ("fail", "warn")
+                self.rounds_done = self.rounds_done + 1
+            self.round = None
+            self.step = None
         elif kind == "step_begin":
-            for s in self.run.children:          # keep finished steps tidy
+            for s in self._parent().children:    # keep finished steps tidy
                 if s.kind == "step":
                     s.expanded = False
             badge, role = STATUS_BADGE["run"]
-            self.step = self.run.add(Node(
+            self.step = self._parent().add(Node(
                 [("[", C_NORMAL), (badge, role), ("] ", C_NORMAL), (ev.get("title", ""), C_STEP)],
                 expanded=True, kind="step", detail=ev.get("title")))
             self.step.detail = ev.get("title", "")
@@ -166,6 +197,7 @@ class Model:
                                                  ev.get("passed", 0), ev.get("warned", 0),
                                                  ev.get("failed", 0)), C_DIM)]
             self.step = None
+            self.round = None
 
     def _msg(self, ev):
         req = ev.get("dir") == "req"
@@ -308,12 +340,14 @@ SCENARIOS = [
     ("7", "Measurements", ["meas"], "signed GET_MEASUREMENTS"),
     ("8", "Secure session", ["session"], "KEY_EXCHANGE / FINISH ..."),
     ("a", "Run all", ["all"], "full attestation flow"),
+    ("l", "Loop attestation", ["challenge", "meas"], "repeat, fresh nonces"),
 ]
 
 VERSIONS = [None, "1.0", "1.1", "1.2", "1.3", "1.4"]
 
 HELP = [
     ("1-8, a", "run a scenario (a = all)"),
+    ("l", "loop challenge + measurements (x stops)"),
     ("r", "re-run the last scenario"),
     ("t", "toggle trust anchor (--root-ca)"),
     ("v", "cycle SPDM version (auto/1.0../1.4)"),
@@ -344,6 +378,7 @@ class App:
         self.status = "Press 1-8 or 'a' to run a scenario, '?' for help"
         self.show_help = False
         self.spin = 0
+        self.looping = False
 
     # ---------------------------------------------------------- actions
     def extra_args(self, cmds):
@@ -355,6 +390,8 @@ class App:
         v = VERSIONS[self.version_idx]
         if v:
             extra += ["-V", v]
+        if self.looping:
+            extra += ["--loop", str(self.args.loop_interval)]
         return extra
 
     def run_scenario(self, sc):
@@ -365,6 +402,7 @@ class App:
             self.status = "busy - wait for the current run or press x"
             return
         key, title, cmds, _ = sc
+        self.looping = key == "l"
         extra = self.extra_args(cmds)
         self.model.start_run("%s  (%s)" % (title, " ".join(extra + cmds)))
         try:
@@ -417,7 +455,11 @@ class App:
         busy = self.runner is not None and self.runner.busy()
         spin = "|/-\\"[self.spin % 4] if busy else " "
         m = self.model
-        return [(" %s " % spin, C_HI), (self.status, C_NORMAL),
+        status = self.status
+        if self.looping and busy:
+            status = "looping every %ss: %d round(s) done (x stops)" % (
+                self.args.loop_interval, m.rounds_done)
+        return [(" %s " % spin, C_HI), (status, C_NORMAL),
                 ("   mctp tx/rx %d/%d" % (m.mctp[0], m.mctp[1]), C_DIM),
                 ("   follow:%s" % ("on" if self.follow else "off"), C_DIM),
                 ("   ? help  q quit", C_DIM)]
@@ -624,7 +666,9 @@ def handle_key(app, ch, lines, page):
         app.status = "SPDM version: %s" % (VERSIONS[app.version_idx] or "auto")
         return True
     if ch == ord("x") and app.runner:
-        app.runner.stop()
+        if app.runner.busy():
+            app.runner.stop()
+            app.status = "stopped"
         return True
     if ch == ord("f"):
         app.follow = not app.follow
@@ -712,7 +756,9 @@ def main():
                    help="root CA path on the target used by 'Get root CA' and the trust toggle")
     p.add_argument("--trust", action="store_true", help="start with the trust anchor enabled")
     p.add_argument("--record", metavar="FILE", help="append the raw JSON events to FILE")
-    p.add_argument("--run", dest="autorun", metavar="KEY", help="start scenario KEY (1-8, a)")
+    p.add_argument("--loop-interval", type=int, default=5, metavar="SEC",
+                   help="seconds between rounds of the loop scenario 'l' (default 5)")
+    p.add_argument("--run", dest="autorun", metavar="KEY", help="start scenario KEY (1-8, a, l)")
     p.add_argument("--snapshot", choices=["folded", "all"],
                    help="no TUI: render the tree to stdout (with --replay or --run)")
     p.add_argument("--no-color", action="store_true", help="with --snapshot: plain text")

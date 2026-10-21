@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "output.h"
@@ -248,6 +249,11 @@ void out_step_end(const char *id, enum out_status st, node_t *result, const char
         fputs(",\"result\":", stdout);
         json_tree(stdout, result);
         json_end();
+    } else if (g_out.quiet) {
+        /* one line per step: status, step name, summary */
+        text_status(st);
+        printf(" %s%-12s%s %s\n", c(C_BOLD), id, c(C_RESET), s ? s : "");
+        fflush(stdout);
     } else {
         printf("    ");
         text_status(st);
@@ -351,4 +357,53 @@ void out_done(enum out_status st, int passed, int warned, int failed)
     printf("\n%sSummary:%s %s%d passed%s, %s%d warning%s, %s%d failed%s\n", c(C_BOLD), c(C_RESET),
            c(C_GREEN), passed, c(C_RESET), c(C_YELLOW), warned, c(C_RESET),
            c(failed ? C_RED : ""), failed, c(C_RESET));
+}
+
+void out_round_begin(int round, int count, int interval)
+{
+    char ts[32];
+    time_t now = time(NULL);
+
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    if (g_out.mode == OUT_JSON) {
+        json_begin("round_begin");
+        printf(",\"round\":%d,\"count\":%d,\"interval\":%d,\"time\":", round, count, interval);
+        json_str(stdout, ts);
+        json_end();
+        return;
+    }
+    if (g_out.quiet)
+        return;
+    if (count)
+        printf("\n%s---------------- Round %d/%d  %s ----------------%s\n", c(C_BOLD C_MAGENTA),
+               round, count, ts, c(C_RESET));
+    else
+        printf("\n%s---------------- Round %d  %s ----------------%s\n", c(C_BOLD C_MAGENTA),
+               round, ts, c(C_RESET));
+    fflush(stdout);
+}
+
+void out_round_end(int round, enum out_status st, int passed, int warned, int failed)
+{
+    if (g_out.mode == OUT_JSON) {
+        json_begin("round_end");
+        printf(",\"round\":%d,\"status\":\"%s\",\"passed\":%d,\"warned\":%d,\"failed\":%d",
+               round, status_name(st), passed, warned, failed);
+        json_end();
+        return;
+    }
+    if (g_out.quiet) {
+        char ts[32];
+        time_t now = time(NULL);
+
+        strftime(ts, sizeof(ts), "%H:%M:%S", localtime(&now));
+        text_status(st);
+        printf(" %sround %-6d%s %s  %d passed, %d warning(s), %d failed\n", c(C_BOLD), round,
+               c(C_RESET), ts, passed, warned, failed);
+    } else {
+        printf("    ");
+        text_status(st);
+        printf(" round %d: %d passed, %d warning(s), %d failed\n", round, passed, warned, failed);
+    }
+    fflush(stdout);
 }

@@ -34,6 +34,8 @@ void out_msg(bool tx, const uint32_t *session_id, const char *name, uint8_t vers
 void out_transport(bool tx, uint8_t mctp_type, uint8_t eid, size_t len);
 void out_log(enum out_status lvl, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void out_done(enum out_status st, int passed, int warned, int failed);
+void out_round_begin(int round, int count, int interval);
+void out_round_end(int round, enum out_status st, int passed, int warned, int failed);
 
 const char *status_name(enum out_status st);
 

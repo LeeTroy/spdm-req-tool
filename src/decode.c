@@ -1228,16 +1228,22 @@ node_t *spdm_decode(void *ctx, bool is_request, const uint8_t *msg, size_t len)
     return root;
 }
 
-/* Last plaintext response seen per response code. */
-static struct {
+/* Last plaintext message seen per request/response code. */
+static struct last_msg {
     uint8_t *data;
     size_t len;
-} g_last[256];
+} g_last[256], g_last_req[256];
 
 const uint8_t *decode_last_response(uint8_t code, size_t *len)
 {
     *len = g_last[code].len;
     return g_last[code].data;
+}
+
+const uint8_t *decode_last_request(uint8_t code, size_t *len)
+{
+    *len = g_last_req[code].len;
+    return g_last_req[code].data;
 }
 
 void decode_and_report(void *ctx, bool tx, const uint32_t *session_id, const void *msg,
@@ -1247,14 +1253,15 @@ void decode_and_report(void *ctx, bool tx, const uint32_t *session_id, const voi
     node_t *tree;
     char name[64];
 
-    if (!tx && len >= 2) {
+    if (len >= 2) {
+        struct last_msg *slot = tx ? &g_last_req[m[1]] : &g_last[m[1]];
         uint8_t *copy = malloc(len);
 
         if (copy) {
             memcpy(copy, m, len);
-            free(g_last[m[1]].data);
-            g_last[m[1]].data = copy;
-            g_last[m[1]].len = len;
+            free(slot->data);
+            slot->data = copy;
+            slot->len = len;
         }
     }
 

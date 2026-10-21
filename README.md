@@ -71,7 +71,9 @@ GET_CERTIFICATE first). Exit status is 0 when no step failed.
 | `-v` / `-vv` | **decode every SPDM request/response** (`-vv` adds MCTP frames) |
 | `-x` | hex dump of every message |
 | `-j` | JSON-lines output (consumed by spdm-demo) |
-| `--color auto\|always\|never`, `-q` | output control |
+| `--color auto\|always\|never` | colored output (auto: only on a terminal, honours `NO_COLOR`) |
+| `-q` | quiet: one line per step (and per loop round), no details; errors still go to stderr |
+| `-l SEC`, `-c N`, `--loop-full` | loop mode (see below) |
 
 ### Root CA (certificate chain verification)
 
@@ -90,6 +92,63 @@ chain is not anchored in anything you trust. The result is reported as **WARN**.
 ```sh
 spdm-req-tool -e 42 get-root-ca -R /tmp/ast1080-root.pem
 spdm-req-tool -e 42 -r /tmp/ast1080-root.pem all
+```
+
+### Loop mode (fresh nonces every round)
+
+```sh
+spdm-req-tool -e 46 -r /tmp/ca-cert.pem --loop 5 challenge meas      # until Ctrl-C
+spdm-req-tool -e 46 -r /tmp/ca-cert.pem --loop 5 --count 10 all
+```
+
+The commands repeat every `SEC` seconds. Each round:
+
+* generates a new 32-byte requester nonce with libspdm's RNG for CHALLENGE and
+  signed GET_MEASUREMENTS and passes it in explicitly (`requester_nonce_in`),
+* checks that the nonce echoed in the request is the generated one, and that the
+  **requester and responder nonces both differ from the previous round**. A
+  repeated or all-zero responder nonce fails the step as a possible replay. For
+  `session` the same check runs on the KEY_EXCHANGE / KEY_EXCHANGE_RSP random data,
+* reports `NonceFreshness` in the step result and prints a per-round summary.
+
+Later rounds reuse the connection and certificate chain (`all` then repeats
+challenge, meas and session). `--loop-full` redoes VCA and GET_CERTIFICATE every
+round. After a failed round the next one reconnects, so the loop recovers when
+the device re-enumerates. Ctrl-C (or SIGTERM) stops after the current round, and a
+second Ctrl-C exits immediately. The exit status is 1 if any round failed.
+
+### Quiet output
+
+`-q` is meant for scripts, logs and long loops:
+
+```text
+$ spdm-req-tool -e 46 -r /tmp/ca-cert.pem -q all
+[  OK  ] connect      Negotiated SPDM 1.4
+[  OK  ] digests      1 certificate slot(s) provisioned
+[  OK  ] cert         Retrieved 5105-byte chain with 6 certificate(s), trusted
+[  OK  ] challenge    Responder proved possession of the slot 0 private key (summary: all)
+[  OK  ] meas         1 measurement block(s), signature verified
+[  OK  ] session      Secure session 0x0026ffff established
+[  OK  ] session-meas 1 measurement block(s)
+[  OK  ] end-session  session closed
+
+Summary: 8 passed, 0 warning, 0 failed
+
+$ spdm-req-tool -e 46 -r /tmp/ca-cert.pem -q --loop 2 --count 3 challenge meas
+[  OK  ] connect      Negotiated SPDM 1.4
+[  OK  ] digests      1 certificate slot(s) provisioned
+[  OK  ] cert         Retrieved 5105-byte chain with 6 certificate(s), trusted
+[  OK  ] challenge    Responder proved possession of the slot 0 private key (summary: all)
+[  OK  ] meas         1 measurement block(s), signature verified
+[  OK  ] round 1      03:34:44  5 passed, 0 warning(s), 0 failed
+[  OK  ] challenge    Responder proved possession of the slot 0 private key (summary: all)
+[  OK  ] meas         1 measurement block(s), signature verified
+[  OK  ] round 2      03:34:46  2 passed, 0 warning(s), 0 failed
+[  OK  ] challenge    Responder proved possession of the slot 0 private key (summary: all)
+[  OK  ] meas         1 measurement block(s), signature verified
+[  OK  ] round 3      03:34:48  2 passed, 0 warning(s), 0 failed
+
+Summary: 9 passed, 0 warning, 0 failed
 ```
 
 ### Human-readable traffic
@@ -853,6 +912,8 @@ demo/spdm-demo.py --replay run.jsonl           # offline, e.g. recorded with --r
 * `1`-`8`/`a`: run a scenario (version, VCA, digests, certificates, get root
   CA, challenge, measurements, secure session, all). Each run is a tree node;
   older runs fold away.
+* `l`: loop challenge + signed measurements every `--loop-interval` seconds
+  (default 5). Each round is a node showing its `NonceFreshness` results; `x` stops.
 * `t`: toggle the trust anchor (`-r <--root-ca path>`). `5` (Get root CA) saves to
   the same path. `v`: cycle the SPDM version.
 * Arrow keys / `hjkl` navigate; `Enter`/`Space`/`Right` expand, `Left`
@@ -866,7 +927,7 @@ Suggested demo story: `4` (chain WARN, untrusted) → `5` (save root CA) → `t`
 ## Step-by-step test on the AST2700 BMC (mctpusb0)
 
 The AST1080's EID is assigned dynamically and changes when it re-enumerates on
-USB (it was 42, and is 44 after the firmware update). Check it with `mctp route`.
+USB (it has been 42, 44 and 46 so far). Check it with `mctp route`.
 `demo/ca-cert.pem` is the Aspeed DevelopCA root (SHA-256
 `9F:95:B6:47:...:33:F6:45`). It matches the root that `get-root-ca` extracts
 from the device.
@@ -886,6 +947,7 @@ mctp addr; mctp route | grep mctpusb0                       # 1. local EID 16, r
 /tmp/spdm-req-tool -e 44 -r /tmp/ca-cert.pem -v session     # 9. secure session
 /tmp/spdm-req-tool -e 44 -r /tmp/ca-cert.pem all            # 10. everything: 8 passed
 /tmp/spdm-req-tool -e 44 -i mctpusb0 version                # 11. extended addressing
+/tmp/spdm-req-tool -e 44 -r /tmp/ca-cert.pem -q -l 5 challenge meas   # 12. loop, fresh nonces
 ```
 
 Observed responder: SPDM 1.4, CERT/CHAL/MEAS(signed)/ENCRYPT/MAC/KEY_EX/CHUNK/
@@ -901,8 +963,16 @@ delivered with SPDM large-response chunking, and one measurement block
 * **Signed MEASUREMENTS fail to verify if an unsigned GET_MEASUREMENTS came first.**
   DSP0274 puts every GET_MEASUREMENTS/MEASUREMENTS pair since the last reset
   into L1/L2, and libspdm does too. The responder apparently signs only the last
-  exchange. spdm-req-tool therefore sends the signed request first and
-  queries the index count afterwards.
+  exchange. spdm-req-tool therefore queries the number of indices only for
+  unsigned measurements. A count query after a signed request would enter the
+  *next* round's transcript in loop mode.
+* **CHALLENGE fails when it follows a signed GET_MEASUREMENTS** in a connection
+  whose GET_DIGESTS/GET_CERTIFICATE have not yet been covered by a CHALLENGE
+  (VCA → digests → cert → signed meas → challenge). The same sequence passes with
+  unsigned measurements, and passes against the libspdm reference responder.
+  The device apparently drops the digests/certificate messages from its M1/M2
+  transcript after signing measurements. `all` and `--loop … challenge meas`
+  are not affected because they challenge first.
 * The EAT `eat_profile` claim is CBOR tag 111 (OID) wrapping the ASCII string
   `"1.3.6.1.4.1.42623.1.3"` instead of DER OID bytes. The decoder flags it.
 

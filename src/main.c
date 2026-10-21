@@ -3,10 +3,12 @@
  */
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 #include "library/spdm_requester_lib.h"
 #include "library/spdm_crypt_lib.h"
@@ -44,7 +46,21 @@ struct tool {
     size_t chain_len;
     bool chain_trusted;
     int passed, warned, failed;
+
+    /* loop mode */
+    int loop_interval;          /* seconds, 0: run once */
+    int loop_count;             /* 0: until interrupted */
+    bool loop_full;             /* redo VCA + certificate every round */
+    int round;
+    struct nonce_track {
+        bool have;
+        int round;
+        uint8_t req[32];
+        uint8_t rsp[32];
+    } chal_nonce, meas_nonce, kex_random;
 };
+
+static volatile sig_atomic_t g_stop;
 
 static void tally(struct tool *t, enum out_status st)
 {
@@ -54,6 +70,65 @@ static void tally(struct tool *t, enum out_status st)
         t->warned++;
     else if (st == ST_FAIL)
         t->failed++;
+}
+
+/* Fresh requester nonce for this round, from libspdm's RNG. */
+static void new_nonce(uint8_t nonce[32])
+{
+    if (!libspdm_get_random_number(32, nonce))
+        memset(nonce, 0, 32);
+}
+
+/* Reports nonce freshness against the previous round; a repeated nonce means
+ * a broken RNG (requester) or a possible replay (responder). */
+static enum out_status check_nonces(struct tool *t, node_t *res, struct nonce_track *nt,
+                                    const char *what, const uint8_t *req_sent,
+                                    const uint8_t *req, const uint8_t *rsp)
+{
+    static const uint8_t zero[32];
+    enum out_status st = ST_OK;
+    node_t *n = node_add(res, "NonceFreshness", NULL);
+
+    if (req_sent && memcmp(req_sent, req, 32)) {
+        node_style(node_add(n, "Requester", "%s sent differs from the generated one", what),
+                   NS_ERR);
+        st = ST_FAIL;
+    }
+    if (!memcmp(rsp, zero, 32)) {
+        node_style(node_add(n, "Responder", "all-zero %s", what), NS_ERR);
+        st = ST_FAIL;
+    }
+    if (!nt->have) {
+        node_add(n, "Status", "first round (round %d): nothing to compare yet", t->round);
+    } else {
+        if (!memcmp(nt->req, req, 32)) {
+            node_style(node_add(n, "Requester", "REPEATED %s from round %d", what, nt->round),
+                       NS_ERR);
+            st = ST_FAIL;
+        } else {
+            node_style(node_add(n, "Requester", "fresh (differs from round %d)", nt->round), NS_OK);
+        }
+        if (!memcmp(nt->rsp, rsp, 32)) {
+            node_style(node_add(n, "Responder",
+                                "REPEATED %s from round %d (possible replay)", what, nt->round),
+                       NS_ERR);
+            st = ST_FAIL;
+        } else {
+            node_style(node_add(n, "Responder", "fresh (differs from round %d)", nt->round), NS_OK);
+        }
+    }
+    memcpy(nt->req, req, 32);
+    memcpy(nt->rsp, rsp, 32);
+    nt->have = true;
+    nt->round = t->round;
+    return st;
+}
+
+static enum out_status worst(enum out_status a, enum out_status b)
+{
+    static const int rank[] = { [ST_OK] = 1, [ST_WARN] = 2, [ST_FAIL] = 3, [ST_SKIP] = 0 };
+
+    return rank[a] >= rank[b] ? a : b;
 }
 
 #define STEP_END(t, id, st, res, ...)                     \
@@ -377,10 +452,11 @@ static const char *summary_name(uint8_t v)
 
 static int step_challenge(struct tool *t)
 {
-    uint8_t meas_hash[LIBSPDM_MAX_HASH_SIZE], req_nonce[32], rsp_nonce[32];
+    uint8_t meas_hash[LIBSPDM_MAX_HASH_SIZE], nonce_in[32], req_nonce[32], rsp_nonce[32];
     uint8_t opaque[1024];
     size_t opaque_len = sizeof(opaque);
     uint8_t slot_mask = 0, summary;
+    enum out_status status;
     libspdm_return_t st;
     node_t *res;
     char title[80];
@@ -399,8 +475,9 @@ static int step_challenge(struct tool *t)
     snprintf(title, sizeof(title), "CHALLENGE - authenticate responder (slot %u)", t->slot);
     out_step_begin("challenge", title);
     res = node_new("", NULL);
-    st = libspdm_challenge_ex(t->app.ctx, NULL, t->slot, summary, meas_hash, &slot_mask, NULL,
-                              req_nonce, rsp_nonce, opaque, &opaque_len);
+    new_nonce(nonce_in);
+    st = libspdm_challenge_ex(t->app.ctx, NULL, t->slot, summary, meas_hash, &slot_mask,
+                              nonce_in, req_nonce, rsp_nonce, opaque, &opaque_len);
     if (LIBSPDM_STATUS_IS_ERROR(st)) {
         STEP_END(t, "challenge", ST_FAIL, res, "CHALLENGE failed: %s", spdm_status_str(st));
         return -1;
@@ -414,6 +491,11 @@ static int step_challenge(struct tool *t)
                      libspdm_get_hash_size(neg_hash(t)));
     if (opaque_len)
         decode_opaque(res, opaque, opaque_len, spdm_conn_version(t->app.ctx));
+    status = check_nonces(t, res, &t->chal_nonce, "nonce", nonce_in, req_nonce, rsp_nonce);
+    if (status == ST_FAIL) {
+        STEP_END(t, "challenge", ST_FAIL, res, "signature verified, but the nonces are not fresh");
+        return -1;
+    }
     STEP_END(t, "challenge", t->chain_trusted ? ST_OK : ST_WARN, res,
              "Responder proved possession of the slot %u private key%s (summary: %s)", t->slot,
              t->chain_trusted ? "" : ", but its certificate chain is not trusted",
@@ -429,8 +511,9 @@ static int do_measurements(struct tool *t, const uint32_t *sid, const char *id)
     uint32_t rec_len = MEAS_RECORD_MAX;
     uint8_t opaque[1024];
     size_t opaque_len = sizeof(opaque);
-    uint8_t req_nonce[32], rsp_nonce[32];
+    uint8_t nonce_in[32], req_nonce[32], rsp_nonce[32];
     uint8_t changed = 0, nblocks = 0, total = 0, attr = 0, op;
+    enum out_status status = ST_OK;
     uint32_t caps = peer_caps(t);
     libspdm_return_t st;
     node_t *res, *rn;
@@ -454,9 +537,10 @@ static int do_measurements(struct tool *t, const uint32_t *sid, const char *id)
     if (sig)
         attr |= SPDM_GET_MEASUREMENTS_REQUEST_ATTRIBUTES_GENERATE_SIGNATURE;
     rec_len = MEAS_RECORD_MAX;
+    new_nonce(nonce_in);
     st = libspdm_get_measurement_ex(t->app.ctx, sid, attr, op, t->slot, &changed, &nblocks,
-                                    &rec_len, rec, NULL, req_nonce, rsp_nonce, opaque,
-                                    &opaque_len);
+                                    &rec_len, rec, sig ? nonce_in : NULL, req_nonce, rsp_nonce,
+                                    opaque, &opaque_len);
     if (LIBSPDM_STATUS_IS_ERROR(st)) {
         STEP_END(t, id, ST_FAIL, res, "GET_MEASUREMENTS failed: %s", spdm_status_str(st));
         free(rec);
@@ -470,25 +554,33 @@ static int do_measurements(struct tool *t, const uint32_t *sid, const char *id)
     rn = node_add(res, "Measurements", "%u bytes", rec_len);
     decode_meas_record(rn, rec, rec_len, nblocks);
 
-    /* Query the number of indices only after the signed exchange: a preceding
-     * unsigned GET_MEASUREMENTS belongs to the L1/L2 transcript, and some
-     * responders leave it out of the data they sign. */
-    rec_len = MEAS_RECORD_MAX;
-    st = libspdm_get_measurement_ex(t->app.ctx, sid, 0,
-                                    SPDM_GET_MEASUREMENTS_REQUEST_MEASUREMENT_OPERATION_TOTAL_NUMBER_OF_MEASUREMENTS,
-                                    t->slot, &changed, &total, &rec_len, rec, NULL, NULL, NULL,
-                                    NULL, NULL);
-    if (LIBSPDM_STATUS_IS_ERROR(st))
-        node_style(node_add(res, "TotalMeasurementIndices", "query failed: %s",
-                            spdm_status_str(st)), NS_WARN);
-    else
-        node_add(res, "TotalMeasurementIndices", "%u", total);
+    /* The number of indices is only queried for unsigned measurements: an
+     * unsigned GET_MEASUREMENTS belongs to the L1/L2 transcript of the next
+     * signed one, and some responders leave it out of the data they sign. */
+    if (!sig) {
+        rec_len = MEAS_RECORD_MAX;
+        st = libspdm_get_measurement_ex(t->app.ctx, sid, 0,
+                                        SPDM_GET_MEASUREMENTS_REQUEST_MEASUREMENT_OPERATION_TOTAL_NUMBER_OF_MEASUREMENTS,
+                                        t->slot, &changed, &total, &rec_len, rec, NULL, NULL,
+                                        NULL, NULL, NULL);
+        if (LIBSPDM_STATUS_IS_ERROR(st))
+            node_style(node_add(res, "TotalMeasurementIndices", "query failed: %s",
+                                spdm_status_str(st)), NS_WARN);
+        else
+            node_add(res, "TotalMeasurementIndices", "%u", total);
+    }
     if (sig) {
         node_add_hex(res, "RequesterNonce", req_nonce, 32);
         node_add_hex(res, "ResponderNonce", rsp_nonce, 32);
+        status = check_nonces(t, res, &t->meas_nonce, "nonce", nonce_in, req_nonce, rsp_nonce);
     }
     if (opaque_len)
         decode_opaque(res, opaque, opaque_len, spdm_conn_version(t->app.ctx));
+    if (status == ST_FAIL) {
+        STEP_END(t, id, ST_FAIL, res, "signature verified, but the nonces are not fresh");
+        free(rec);
+        return -1;
+    }
     STEP_END(t, id, sig && !t->chain_trusted && !sid ? ST_WARN : ST_OK, res,
              "%u measurement block(s)%s", nblocks,
              sig ? (t->chain_trusted ? ", signature verified" :
@@ -515,6 +607,7 @@ static int step_session(struct tool *t)
     uint8_t meas_hash[LIBSPDM_MAX_HASH_SIZE];
     uint32_t sid = 0, caps;
     uint8_t hb = 0, summary;
+    enum out_status status = ST_OK;
     libspdm_return_t st;
     node_t *res;
     bool saved_sig;
@@ -548,8 +641,21 @@ static int step_session(struct tool *t)
     node_add(res, "SessionKeys", "derived (handshake + data secrets)");
     if (summary)
         node_add_hex(res, "MeasurementSummaryHash", meas_hash, libspdm_get_hash_size(neg_hash(t)));
-    STEP_END(t, "session", t->chain_trusted ? ST_OK : ST_WARN, res,
+    {
+        /* RandomData of KEY_EXCHANGE / KEY_EXCHANGE_RSP (offset 8, 32 bytes) */
+        const uint8_t *kreq, *krsp;
+        size_t lreq, lrsp;
+
+        kreq = decode_last_request(SPDM_KEY_EXCHANGE, &lreq);
+        krsp = decode_last_response(SPDM_KEY_EXCHANGE_RSP, &lrsp);
+        if (kreq && krsp && lreq >= 40 && lrsp >= 40)
+            status = check_nonces(t, res, &t->kex_random, "random data", NULL, kreq + 8,
+                                  krsp + 8);
+    }
+    status = worst(status, t->chain_trusted ? ST_OK : ST_WARN);
+    STEP_END(t, "session", status, res,
              "Secure session 0x%08x established%s", sid,
+             status == ST_FAIL ? ", but the key exchange random data is not fresh" :
              t->chain_trusted ? "" : " (responder identity not anchored in a trusted root)");
 
     if (caps & SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_HBEAT_CAP) {
@@ -579,6 +685,22 @@ static int step_session(struct tool *t)
     STEP_END(t, "end-session", LIBSPDM_STATUS_IS_ERROR(st) ? ST_FAIL : ST_OK, res, "%s",
              LIBSPDM_STATUS_IS_ERROR(st) ? spdm_status_str(st) : "session closed");
     return 0;
+}
+
+/* ---------------------------------------------------------------- loop */
+
+static void on_signal(int sig)
+{
+    g_stop = 1;
+    signal(sig, SIG_DFL); /* a second Ctrl-C exits immediately */
+}
+
+static void sleep_interruptible(int seconds)
+{
+    struct timespec ts = { .tv_sec = seconds };
+
+    while (!g_stop && nanosleep(&ts, &ts) && errno == EINTR)
+        ;
 }
 
 /* ----------------------------------------------------------------- CLI */
@@ -627,12 +749,20 @@ static void usage(FILE *f)
 "  -R, --save-root-ca FILE  where get-root-ca stores the root CA (.der for DER, else PEM)\n"
 "  -C, --save-chain FILE    save the certificate chain (PEM bundle, or raw SPDM chain if .bin)\n"
 "\n"
+"Loop:\n"
+"  -l, --loop SEC           repeat the commands every SEC seconds (Ctrl-C stops);\n"
+"                           every round uses fresh nonces and checks that the\n"
+"                           requester and responder nonces differ from the last round\n"
+"  -c, --count N            stop after N rounds (default: until interrupted)\n"
+"      --loop-full          redo VCA and GET_CERTIFICATE every round (default: reuse\n"
+"                           them; 'all' then repeats challenge, meas and session)\n"
+"\n"
 "Output:\n"
 "  -v, --verbose            decode every SPDM request/response (-vv: also MCTP frames)\n"
 "  -x, --hex                hex dump every SPDM message\n"
 "  -j, --json               emit JSON lines (used by spdm-demo)\n"
 "      --color WHEN         auto, always, never\n"
-"  -q, --quiet              only print step results\n"
+"  -q, --quiet              one line per step (and per loop round), no details\n"
 "  -h, --help               this help\n"
 "      --version            print version\n"
 "\n"
@@ -640,7 +770,8 @@ static void usage(FILE *f)
 "  spdm-req-tool -e 42 all\n"
 "  spdm-req-tool -e 42 -v connect cert\n"
 "  spdm-req-tool -e 42 get-root-ca -R ast1080-root.pem\n"
-"  spdm-req-tool -e 42 -r ast1080-root.pem challenge meas\n");
+"  spdm-req-tool -e 42 -r ast1080-root.pem challenge meas\n"
+"  spdm-req-tool -e 42 -r ast1080-root.pem --loop 5 challenge meas\n");
 }
 
 static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint32_t *out)
@@ -673,7 +804,7 @@ static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint
 
 enum {
     OPT_ASYM = 0x100, OPT_HASH, OPT_DHE, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
-    OPT_COLOR, OPT_VERSION, OPT_NO_SESSION,
+    OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL,
 };
 
 static const struct option long_opts[] = {
@@ -702,6 +833,9 @@ static const struct option long_opts[] = {
     { "quiet", no_argument, NULL, 'q' },
     { "help", no_argument, NULL, 'h' },
     { "version", no_argument, NULL, OPT_VERSION },
+    { "loop", required_argument, NULL, 'l' },
+    { "count", required_argument, NULL, 'c' },
+    { "loop-full", no_argument, NULL, OPT_LOOP_FULL },
     { 0 }
 };
 
@@ -724,10 +858,14 @@ static int run_command(struct tool *t, const char *cmd)
     if (!strcmp(cmd, "session"))
         return step_session(t);
     if (!strcmp(cmd, "all")) {
-        if (step_connect(t))
-            return -1;
-        step_digests(t);
-        step_cert(t);
+        /* Later loop rounds reuse the connection and certificate chain and
+         * only repeat the nonce-based steps (unless --loop-full). */
+        if (!t->connected || !t->have_cert) {
+            if (step_connect(t))
+                return -1;
+            step_digests(t);
+            step_cert(t);
+        }
         step_challenge(t);
         step_meas(t);
         step_session(t);
@@ -762,7 +900,7 @@ int main(int argc, char **argv)
     t.meas_sig = true;
     t.meas_summary = SPDM_CHALLENGE_REQUEST_ALL_MEASUREMENTS_HASH;
 
-    while ((opt = getopt_long(argc, argv, "e:n:i:L:t:V:s:m:r:R:C:vxjqh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "e:n:i:L:t:V:s:m:r:R:C:l:c:vxjqh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'e': {
             char *end;
@@ -838,6 +976,15 @@ int main(int argc, char **argv)
             t.root_ca_files[t.root_ca_count++] = optarg;
             break;
         case 'R': t.save_root_ca = optarg; break;
+        case 'l':
+            t.loop_interval = atoi(optarg);
+            if (t.loop_interval < 1) {
+                fprintf(stderr, "invalid --loop interval '%s' (seconds, >= 1)\n", optarg);
+                return 2;
+            }
+            break;
+        case 'c': t.loop_count = atoi(optarg); break;
+        case OPT_LOOP_FULL: t.loop_full = true; break;
         case 'C': t.save_chain = optarg; break;
         case 'v': verbose++; break;
         case 'x': hex = true; break;
@@ -897,10 +1044,40 @@ int main(int argc, char **argv)
         }
     }
 
-    for (i = optind; i < argc; i++) {
-        rc = run_command(&t, argv[i]);
-        if (rc && !t.connected)
-            break; /* nothing else can work without a connection */
+    if (t.loop_interval) {
+        struct sigaction sa;
+
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_signal; /* no SA_RESTART: interrupts the sleep */
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
+    for (t.round = 1;; t.round++) {
+        int p0 = t.passed, w0 = t.warned, f0 = t.failed;
+
+        if (t.loop_interval)
+            out_round_begin(t.round, t.loop_count, t.loop_interval);
+        for (i = optind; i < argc && !g_stop; i++) {
+            rc = run_command(&t, argv[i]);
+            if (rc && !t.connected)
+                break; /* nothing else can work without a connection */
+        }
+        if (!t.loop_interval)
+            break;
+        out_round_end(t.round, t.failed > f0 ? ST_FAIL : t.warned > w0 ? ST_WARN : ST_OK,
+                      t.passed - p0, t.warned - w0, t.failed - f0);
+        if (g_stop || (t.loop_count && t.round >= t.loop_count))
+            break;
+        /* After a failure (e.g. the device re-enumerated) start over with a new
+         * connection; with --loop-full always do. */
+        if (t.loop_full || t.failed > f0) {
+            t.connected = false;
+            t.have_cert = false;
+            t.digests_done = false;
+        }
+        sleep_interruptible(t.loop_interval);
+        if (g_stop)
+            break;
     }
 
     out_done(t.failed ? ST_FAIL : t.warned ? ST_WARN : ST_OK, t.passed, t.warned, t.failed);

@@ -14,6 +14,7 @@ void decode_and_report(void *ctx, bool tx, const uint32_t *session_id, const voi
 
 /* Last plaintext response received with the given response code (or NULL). */
 const uint8_t *decode_last_response(uint8_t code, size_t *len);
+const uint8_t *decode_last_request(uint8_t code, size_t *len);
 
 /* Decodes one SPDM message into a tree. */
 node_t *spdm_decode(void *ctx, bool is_request, const uint8_t *msg, size_t len);
