@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1032" height="732" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="14">
+<rect width="100%" height="100%" rx="8" fill="#0d1117"/>
+<circle cx="18" cy="14" r="5" fill="#ff5f56"/><circle cx="36" cy="14" r="5" fill="#ffbd2e"/><circle cx="54" cy="14" r="5" fill="#27c93f"/>
+<text x="504.0" y="18" fill="#8b949e" text-anchor="middle" font-size="12">spdm-demo.py</text>
+<text x="12.0" y="40.0" fill="#d2a8ff" font-weight="bold" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs"> SPDM Requester Demo </text>
+<text x="188.4" y="40.0" fill="#8b949e" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">  libspdm over AF_MCTP</text>
+<text x="12.0" y="57.0" fill="#8b949e" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs"> target: </text>
+<text x="87.6" y="57.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="159.6" lengthAdjust="spacingAndGlyphs">ssh root@10.0.0.120</text>
+<text x="247.2" y="57.0" fill="#8b949e" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">   EID: </text>
+<text x="314.4" y="57.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">44</text>
+<text x="331.2" y="57.0" fill="#8b949e" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">   SPDM: </text>
+<text x="406.8" y="57.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">auto</text>
+<text x="440.4" y="57.0" fill="#8b949e" xml:space="preserve" textLength="142.8" lengthAdjust="spacingAndGlyphs">   trust anchor: </text>
+<text x="583.2" y="57.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="159.6" lengthAdjust="spacingAndGlyphs">ON /tmp/ca-cert.pem</text>
+<text x="12.0" y="74.0" fill="#d8dee9" xml:space="preserve" textLength="1008.0" lengthAdjust="spacingAndGlyphs">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="12.0" y="91.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs"> Scenarios</text>
+<text x="96.0" y="91.0" fill="#d8dee9" xml:space="preserve" textLength="168.0" lengthAdjust="spacingAndGlyphs">                   │</text>
+<text x="264.0" y="91.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▾ </text>
+<text x="280.8" y="91.0" fill="#d2a8ff" font-weight="bold" xml:space="preserve" textLength="344.4" lengthAdjust="spacingAndGlyphs">Run #1 Run all  (-r /tmp/ca-cert.pem all)</text>
+<text x="625.2" y="91.0" fill="#d8dee9" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">   [</text>
+<text x="658.8" y="91.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="692.4" y="91.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="709.2" y="91.0" fill="#8b949e" xml:space="preserve" textLength="218.4" lengthAdjust="spacingAndGlyphs">8 passed, 0 warn, 0 failed</text>
+<text x="12.0" y="108.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 1 </text>
+<text x="37.2" y="108.0" fill="#d8dee9" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">Version                   │  </text>
+<text x="280.8" y="108.0" fill="#8b949e" xml:space="preserve" textLength="470.4" lengthAdjust="spacingAndGlyphs">  spdm-req-tool 1.0.0 | libspdm | AF_MCTP EID 44 net any</text>
+<text x="12.0" y="125.0" fill="#8b949e" xml:space="preserve" textLength="126.0" lengthAdjust="spacingAndGlyphs">    GET_VERSION</text>
+<text x="138.0" y="125.0" fill="#d8dee9" xml:space="preserve" textLength="142.8" lengthAdjust="spacingAndGlyphs">              │  </text>
+<text x="280.8" y="125.0" fill="#8b949e" xml:space="preserve" textLength="621.6" lengthAdjust="spacingAndGlyphs">  trust anchor: CN=DevelopCA, O=Aspeed Technology, C=TW (/tmp/ca-cert.pem)</text>
+<text x="12.0" y="142.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 2 </text>
+<text x="37.2" y="142.0" fill="#d8dee9" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">Connect (VCA)             │  </text>
+<text x="280.8" y="142.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="297.6" y="142.0" fill="#d8dee9" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">[</text>
+<text x="306.0" y="142.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="339.6" y="142.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="356.4" y="142.0" fill="#79a8ff" font-weight="bold" xml:space="preserve" textLength="495.6" lengthAdjust="spacingAndGlyphs">VCA - GET_VERSION / GET_CAPABILITIES / NEGOTIATE_ALGORITHMS</text>
+<text x="12.0" y="159.0" fill="#8b949e" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">    VERSION / CAPABILITIES /…</text>
+<text x="255.6" y="159.0" fill="#d8dee9" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">│  </text>
+<text x="280.8" y="159.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="297.6" y="159.0" fill="#d8dee9" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">[</text>
+<text x="306.0" y="159.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="339.6" y="159.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="356.4" y="159.0" fill="#79a8ff" font-weight="bold" xml:space="preserve" textLength="403.2" lengthAdjust="spacingAndGlyphs">GET_DIGESTS - certificate chain digests per slot</text>
+<text x="12.0" y="176.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 3 </text>
+<text x="37.2" y="176.0" fill="#d8dee9" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">Digests                   │  </text>
+<text x="280.8" y="176.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="297.6" y="176.0" fill="#d8dee9" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">[</text>
+<text x="306.0" y="176.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="339.6" y="176.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="356.4" y="176.0" fill="#79a8ff" font-weight="bold" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs">GET_CERTIFICATE - certificate chain of slot 0</text>
+<text x="12.0" y="193.0" fill="#8b949e" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">    certificate chain digests</text>
+<text x="255.6" y="193.0" fill="#d8dee9" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">│  </text>
+<text x="280.8" y="193.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="297.6" y="193.0" fill="#d8dee9" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">[</text>
+<text x="306.0" y="193.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="339.6" y="193.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="356.4" y="193.0" fill="#79a8ff" font-weight="bold" xml:space="preserve" textLength="361.2" lengthAdjust="spacingAndGlyphs">CHALLENGE - authenticate responder (slot 0)</text>
+<text x="12.0" y="210.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 4 </text>
+<text x="37.2" y="210.0" fill="#d8dee9" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">Certificates              │  </text>
+<text x="280.8" y="210.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="297.6" y="210.0" fill="#d8dee9" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">[</text>
+<text x="306.0" y="210.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="339.6" y="210.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="356.4" y="210.0" fill="#79a8ff" font-weight="bold" xml:space="preserve" textLength="310.8" lengthAdjust="spacingAndGlyphs">GET_MEASUREMENTS - all blocks, signed</text>
+<text x="12.0" y="227.0" fill="#8b949e" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">    GET_CERTIFICATE + chain …</text>
+<text x="255.6" y="227.0" fill="#d8dee9" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">│  </text>
+<text x="280.8" y="227.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▾ </text>
+<text x="297.6" y="227.0" fill="#d8dee9" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">[</text>
+<text x="306.0" y="227.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs"> OK </text>
+<text x="339.6" y="227.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">] </text>
+<text x="356.4" y="227.0" fill="#79a8ff" font-weight="bold" xml:space="preserve" textLength="403.2" lengthAdjust="spacingAndGlyphs">KEY_EXCHANGE / FINISH - establish secure session</text>
+<text x="12.0" y="244.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 5 </text>
+<text x="37.2" y="244.0" fill="#d8dee9" xml:space="preserve" textLength="260.4" lengthAdjust="spacingAndGlyphs">Get root CA               │    </text>
+<text x="297.6" y="244.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="314.4" y="244.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="117.6" lengthAdjust="spacingAndGlyphs">→ KEY_EXCHANGE</text>
+<text x="432.0" y="244.0" fill="#8b949e" xml:space="preserve" textLength="109.2" lengthAdjust="spacingAndGlyphs">  v1.4  166 B</text>
+<text x="12.0" y="261.0" fill="#8b949e" xml:space="preserve" textLength="218.4" lengthAdjust="spacingAndGlyphs">    save responder root CA</text>
+<text x="230.4" y="261.0" fill="#d8dee9" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">   │</text>
+<rect x="264.0" y="248.0" width="33.6" height="17.0" fill="#d8dee9"/>
+<rect x="297.6" y="248.0" width="16.8" height="17.0" fill="#8b949e"/>
+<text x="297.6" y="261.0" fill="#0d1117" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▾ </text>
+<rect x="314.4" y="248.0" width="151.2" height="17.0" fill="#7ee787"/>
+<text x="314.4" y="261.0" fill="#0d1117" font-weight="bold" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs">← KEY_EXCHANGE_RSP</text>
+<rect x="465.6" y="248.0" width="109.2" height="17.0" fill="#8b949e"/>
+<text x="465.6" y="261.0" fill="#0d1117" xml:space="preserve" textLength="109.2" lengthAdjust="spacingAndGlyphs">  v1.4  342 B</text>
+<rect x="574.8" y="248.0" width="436.8" height="17.0" fill="#d8dee9"/>
+<text x="12.0" y="278.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 6 </text>
+<text x="37.2" y="278.0" fill="#d8dee9" xml:space="preserve" textLength="277.2" lengthAdjust="spacingAndGlyphs">Challenge                 │      </text>
+<text x="314.4" y="278.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="278.0" fill="#56d4dd" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">Header</text>
+<text x="381.6" y="278.0" fill="#d8dee9" xml:space="preserve" textLength="638.4" lengthAdjust="spacingAndGlyphs">: SPDMVersion 1.4, KEY_EXCHANGE_RSP (0x64), Param1 0x00, Param2 0x00        </text>
+<text x="12.0" y="295.0" fill="#8b949e" xml:space="preserve" textLength="218.4" lengthAdjust="spacingAndGlyphs">    authenticate responder</text>
+<text x="230.4" y="295.0" fill="#d8dee9" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">   │      </text>
+<text x="331.2" y="295.0" fill="#56d4dd" xml:space="preserve" textLength="126.0" lengthAdjust="spacingAndGlyphs">HeartbeatPeriod</text>
+<text x="457.2" y="295.0" fill="#d8dee9" xml:space="preserve" textLength="562.8" lengthAdjust="spacingAndGlyphs">: 0 s (heartbeat disabled)                                         </text>
+<text x="12.0" y="312.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 7 </text>
+<text x="37.2" y="312.0" fill="#d8dee9" xml:space="preserve" textLength="277.2" lengthAdjust="spacingAndGlyphs">Measurements              │      </text>
+<text x="331.2" y="312.0" fill="#56d4dd" xml:space="preserve" textLength="100.8" lengthAdjust="spacingAndGlyphs">RspSessionID</text>
+<text x="432.0" y="312.0" fill="#d8dee9" xml:space="preserve" textLength="588.0" lengthAdjust="spacingAndGlyphs">: 0x0017                                                              </text>
+<text x="12.0" y="329.0" fill="#8b949e" xml:space="preserve" textLength="226.8" lengthAdjust="spacingAndGlyphs">    signed GET_MEASUREMENTS</text>
+<text x="238.8" y="329.0" fill="#d8dee9" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">  │      </text>
+<text x="331.2" y="329.0" fill="#56d4dd" xml:space="preserve" textLength="134.4" lengthAdjust="spacingAndGlyphs">MutAuthRequested</text>
+<text x="465.6" y="329.0" fill="#d8dee9" xml:space="preserve" textLength="554.4" lengthAdjust="spacingAndGlyphs">: 0x00 (no mutual auth)                                           </text>
+<text x="12.0" y="346.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 8 </text>
+<text x="37.2" y="346.0" fill="#d8dee9" xml:space="preserve" textLength="277.2" lengthAdjust="spacingAndGlyphs">Secure session            │      </text>
+<text x="314.4" y="346.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="346.0" fill="#56d4dd" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">RandomData</text>
+<text x="415.2" y="346.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="432.0" y="346.0" fill="#8b949e" xml:space="preserve" textLength="512.4" lengthAdjust="spacingAndGlyphs">87852b945c08af03dc978c9050afbe91aacc4e6de2da5e7d…  (32 bytes)</text>
+<text x="12.0" y="363.0" fill="#8b949e" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">    KEY_EXCHANGE / FINISH ...</text>
+<text x="255.6" y="363.0" fill="#d8dee9" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs">│      </text>
+<text x="314.4" y="363.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="363.0" fill="#56d4dd" xml:space="preserve" textLength="243.6" lengthAdjust="spacingAndGlyphs">ExchangeData (DHE public key)</text>
+<text x="574.8" y="363.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="591.6" y="363.0" fill="#8b949e" xml:space="preserve" textLength="420.0" lengthAdjust="spacingAndGlyphs">b9b9e46383a9175f2ec3ab7d182d10f9d0396f83a3a1b4fb……</text>
+<text x="12.0" y="380.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs"> a </text>
+<text x="37.2" y="380.0" fill="#d8dee9" xml:space="preserve" textLength="277.2" lengthAdjust="spacingAndGlyphs">Run all                   │      </text>
+<text x="314.4" y="380.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="380.0" fill="#56d4dd" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">MeasurementSummaryHash</text>
+<text x="516.0" y="380.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="532.8" y="380.0" fill="#8b949e" xml:space="preserve" textLength="478.8" lengthAdjust="spacingAndGlyphs">2d87ba07a7ad0c22f0645f283993c43e1b2a9f8b084d7460…  (48 b…</text>
+<text x="12.0" y="397.0" fill="#8b949e" xml:space="preserve" textLength="210.0" lengthAdjust="spacingAndGlyphs">    full attestation flow</text>
+<text x="222.0" y="397.0" fill="#d8dee9" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs">    │      </text>
+<text x="314.4" y="397.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="397.0" fill="#56d4dd" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">OpaqueData</text>
+<text x="415.2" y="397.0" fill="#d8dee9" xml:space="preserve" textLength="604.8" lengthAdjust="spacingAndGlyphs">: 12 bytes                                                              </text>
+<text x="12.0" y="414.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="314.4" y="414.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="414.0" fill="#56d4dd" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">Signature</text>
+<text x="406.8" y="414.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="423.6" y="414.0" fill="#8b949e" xml:space="preserve" textLength="512.4" lengthAdjust="spacingAndGlyphs">ab93211fd76752a003c0ff9175cae6838f26b78f2455a689…  (96 bytes)</text>
+<text x="12.0" y="431.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="314.4" y="431.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="431.0" fill="#56d4dd" xml:space="preserve" textLength="218.4" lengthAdjust="spacingAndGlyphs">ResponderVerifyData (HMAC)</text>
+<text x="549.6" y="431.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="566.4" y="431.0" fill="#8b949e" xml:space="preserve" textLength="445.2" lengthAdjust="spacingAndGlyphs">20910a833dcf116fc784088db986dca56aeb89ad7c4550eb…  (…</text>
+<text x="12.0" y="448.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="314.4" y="448.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="331.2" y="448.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">Raw bytes</text>
+<text x="406.8" y="448.0" fill="#8b949e" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs">  (342)</text>
+<text x="12.0" y="465.0" fill="#d8dee9" xml:space="preserve" textLength="285.6" lengthAdjust="spacingAndGlyphs">                             │    </text>
+<text x="297.6" y="465.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="314.4" y="465.0" fill="#f2cc60" font-weight="bold" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">→ FINISH</text>
+<text x="381.6" y="465.0" fill="#8b949e" xml:space="preserve" textLength="100.8" lengthAdjust="spacingAndGlyphs">  v1.4  54 B</text>
+<text x="482.4" y="465.0" fill="#d2a8ff" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">  [secured 0x0017ffff]</text>
+<text x="12.0" y="482.0" fill="#d8dee9" xml:space="preserve" textLength="285.6" lengthAdjust="spacingAndGlyphs">                             │    </text>
+<text x="297.6" y="482.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▸ </text>
+<text x="314.4" y="482.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="100.8" lengthAdjust="spacingAndGlyphs">← FINISH_RSP</text>
+<text x="415.2" y="482.0" fill="#8b949e" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs">  v1.4  6 B</text>
+<text x="507.6" y="482.0" fill="#d2a8ff" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">  [secured 0x0017ffff]</text>
+<text x="12.0" y="499.0" fill="#d8dee9" xml:space="preserve" textLength="285.6" lengthAdjust="spacingAndGlyphs">                             │    </text>
+<text x="314.4" y="499.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="327.6" lengthAdjust="spacingAndGlyphs">↳ Secure session 0x0017ffff established</text>
+<text x="12.0" y="516.0" fill="#d8dee9" xml:space="preserve" textLength="285.6" lengthAdjust="spacingAndGlyphs">                             │    </text>
+<text x="297.6" y="516.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▾ </text>
+<text x="314.4" y="516.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">Result</text>
+<text x="12.0" y="533.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="331.2" y="533.0" fill="#56d4dd" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">SessionID</text>
+<text x="406.8" y="533.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="423.6" y="533.0" fill="#d8dee9" font-weight="bold" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">0x0017ffff</text>
+<text x="12.0" y="550.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="331.2" y="550.0" fill="#56d4dd" xml:space="preserve" textLength="126.0" lengthAdjust="spacingAndGlyphs">HeartbeatPeriod</text>
+<text x="457.2" y="550.0" fill="#d8dee9" xml:space="preserve" textLength="562.8" lengthAdjust="spacingAndGlyphs">: 0 s                                                              </text>
+<text x="12.0" y="567.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="331.2" y="567.0" fill="#56d4dd" xml:space="preserve" textLength="218.4" lengthAdjust="spacingAndGlyphs">KEY_EXCHANGE_RSP signature</text>
+<text x="549.6" y="567.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="566.4" y="567.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">VERIFIED</text>
+<text x="12.0" y="584.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="331.2" y="584.0" fill="#56d4dd" xml:space="preserve" textLength="159.6" lengthAdjust="spacingAndGlyphs">ResponderVerifyData</text>
+<text x="490.8" y="584.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="507.6" y="584.0" fill="#7ee787" font-weight="bold" xml:space="preserve" textLength="201.6" lengthAdjust="spacingAndGlyphs">VERIFIED (HMAC over TH1)</text>
+<text x="12.0" y="601.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="331.2" y="601.0" fill="#56d4dd" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs">SessionKeys</text>
+<text x="423.6" y="601.0" fill="#d8dee9" xml:space="preserve" textLength="596.4" lengthAdjust="spacingAndGlyphs">: derived (handshake + data secrets)                                   </text>
+<text x="12.0" y="618.0" fill="#d8dee9" xml:space="preserve" textLength="302.4" lengthAdjust="spacingAndGlyphs">                             │      </text>
+<text x="314.4" y="618.0" fill="#8b949e" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">▾ </text>
+<text x="331.2" y="618.0" fill="#56d4dd" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">MeasurementSummaryHash</text>
+<text x="516.0" y="618.0" fill="#d8dee9" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">: </text>
+<text x="532.8" y="618.0" fill="#8b949e" xml:space="preserve" textLength="478.8" lengthAdjust="spacingAndGlyphs">2d87ba07a7ad0c22f0645f283993c43e1b2a9f8b084d7460…  (48 b…</text>
+<text x="12.0" y="635.0" fill="#d8dee9" xml:space="preserve" textLength="1008.0" lengthAdjust="spacingAndGlyphs">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="12.0" y="652.0" fill="#d8dee9" xml:space="preserve" textLength="1008.0" lengthAdjust="spacingAndGlyphs"> Response KEY_EXCHANGE_RSP (342 bytes)                                                                                  </text>
+<rect x="12.0" y="690.0" width="25.2" height="17.0" fill="#d8dee9"/>
+<rect x="37.2" y="690.0" width="336.0" height="17.0" fill="#d8dee9"/>
+<text x="37.2" y="703.0" fill="#0d1117" xml:space="preserve" textLength="336.0" lengthAdjust="spacingAndGlyphs">finished: 8 passed, 0 warnings, 0 failed</text>
+<rect x="373.2" y="690.0" width="411.6" height="17.0" fill="#8b949e"/>
+<text x="373.2" y="703.0" fill="#0d1117" xml:space="preserve" textLength="411.6" lengthAdjust="spacingAndGlyphs">   mctp tx/rx 19/19   follow:off   ? help  q quit</text>
+</svg>
