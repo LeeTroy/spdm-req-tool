@@ -14,6 +14,7 @@ Only the Python standard library is used.
 Examples:
     spdm-demo.py --ssh root@10.0.0.120 --password 0penBmc -e 42
     spdm-demo.py --local -e 42                 # tool runs on this machine
+    spdm-demo.py -e 16 --pqc-asym ml-dsa-65    # offer only ML-DSA-65 (SPDM 1.4)
     spdm-demo.py --replay session.jsonl        # offline replay of a recording
 """
 
@@ -345,12 +346,16 @@ SCENARIOS = [
 
 VERSIONS = [None, "1.0", "1.1", "1.2", "1.3", "1.4"]
 
+# --pqc-asym presets cycled with 'p'; None leaves the tool default (all ML-DSA).
+PQC_PRESETS = [None, "none", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]
+
 HELP = [
     ("1-8, a", "run a scenario (a = all)"),
     ("l", "loop challenge + measurements (x stops)"),
     ("r", "re-run the last scenario"),
     ("t", "toggle trust anchor (--root-ca)"),
     ("v", "cycle SPDM version (auto/1.0../1.4)"),
+    ("p", "cycle PQC asym algorithms (--pqc-asym)"),
     ("Up/Down j/k", "move"),
     ("PgUp/PgDn", "page"),
     ("Right/l/Enter", "expand / toggle"),
@@ -374,6 +379,10 @@ class App:
         self.follow = True
         self.trust = bool(args.trust)
         self.version_idx = 0
+        self.pqc_presets = list(PQC_PRESETS)
+        if args.pqc_asym and args.pqc_asym not in self.pqc_presets:
+            self.pqc_presets.append(args.pqc_asym)
+        self.pqc_idx = self.pqc_presets.index(args.pqc_asym)
         self.last = None
         self.status = "Press 1-8 or 'a' to run a scenario, '?' for help"
         self.show_help = False
@@ -390,6 +399,9 @@ class App:
         v = VERSIONS[self.version_idx]
         if v:
             extra += ["-V", v]
+        pqc = self.pqc_presets[self.pqc_idx]
+        if pqc:
+            extra += ["--pqc-asym", pqc]
         if self.looping:
             extra += ["--loop", str(self.args.loop_interval)]
         return extra
@@ -445,9 +457,11 @@ class App:
         a = self.args
         target = "local" if a.local else ("replay " + a.replay if a.replay else "ssh " + a.ssh)
         v = VERSIONS[self.version_idx] or "auto"
+        pqc = self.pqc_presets[self.pqc_idx] or "default"
         line1 = [(" SPDM Requester Demo ", C_RUN), ("  libspdm over AF_MCTP", C_DIM)]
         line2 = [(" target: ", C_DIM), (target, C_HI), ("   EID: ", C_DIM), (str(a.eid), C_HI),
-                 ("   SPDM: ", C_DIM), (v, C_HI), ("   trust anchor: ", C_DIM),
+                 ("   SPDM: ", C_DIM), (v, C_HI), ("   PQC: ", C_DIM), (pqc, C_HI),
+                 ("   trust anchor: ", C_DIM),
                  (("ON " + a.root_ca) if self.trust else "off", C_OK if self.trust else C_WARN)]
         return [line1, line2]
 
@@ -665,6 +679,11 @@ def handle_key(app, ch, lines, page):
         app.version_idx = (app.version_idx + 1) % len(VERSIONS)
         app.status = "SPDM version: %s" % (VERSIONS[app.version_idx] or "auto")
         return True
+    if ch == ord("p"):
+        app.pqc_idx = (app.pqc_idx + 1) % len(app.pqc_presets)
+        pqc = app.pqc_presets[app.pqc_idx]
+        app.status = "PQC asym: %s" % (pqc or "tool default (ml-dsa-44,ml-dsa-65,ml-dsa-87)")
+        return True
     if ch == ord("x") and app.runner:
         if app.runner.busy():
             app.runner.stop()
@@ -755,6 +774,9 @@ def main():
     p.add_argument("--root-ca", default="/tmp/spdm-demo-rootca.pem",
                    help="root CA path on the target used by 'Get root CA' and the trust toggle")
     p.add_argument("--trust", action="store_true", help="start with the trust anchor enabled")
+    p.add_argument("--pqc-asym", metavar="LIST",
+                   help="SPDM 1.4 PQC asym algorithms passed to the tool, e.g. ml-dsa-65 or "
+                        "ml-dsa-87,ml-dsa-65, or none (default: tool default; 'p' cycles presets)")
     p.add_argument("--record", metavar="FILE", help="append the raw JSON events to FILE")
     p.add_argument("--loop-interval", type=int, default=5, metavar="SEC",
                    help="seconds between rounds of the loop scenario 'l' (default 5)")

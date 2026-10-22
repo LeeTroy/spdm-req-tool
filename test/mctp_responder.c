@@ -4,10 +4,13 @@
  * sessions). Uses libspdm's sample keys, so it must never be deployed as a
  * real device.
  *
- *   spdm-test-responder [-k KEYDIR]    (KEYDIR contains ecp384/...)
+ *   spdm-test-responder [-k KEYDIR] [-p mldsa44|mldsa65|mldsa87]
  *
- * The requester then talks to a local EID of this host, e.g.
+ * KEYDIR contains ecp384/ (and mldsa44/, mldsa65/, mldsa87/ for -p). The
+ * requester then talks to a local EID of this host, e.g.
  *   spdm-req-tool -e <local-eid> -r KEYDIR/ecp384/ca.cert.der all
+ * With -p the responder prefers ML-DSA (SPDM 1.4) and serves that chain:
+ *   spdm-req-tool -e <local-eid> -r KEYDIR/mldsa65/ca.cert.der all
  */
 #include <errno.h>
 #include <getopt.h>
@@ -147,13 +150,22 @@ int main(int argc, char **argv)
     size_t scratch_size, chain_size;
     uint32_t hash = SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA_384;
     uint32_t asym = SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P384;
+    uint32_t pqc = 0;
+    bool pqc_first = true;
+    bool ok;
     int opt;
 
-    while ((opt = getopt(argc, argv, "k:")) != -1) {
+    while ((opt = getopt(argc, argv, "k:p:")) != -1) {
         if (opt == 'k')
             g_key_dir = optarg;
+        else if (opt == 'p' && !strcmp(optarg, "mldsa44"))
+            pqc = SPDM_ALGORITHMS_PQC_ASYM_ALGO_ML_DSA_44;
+        else if (opt == 'p' && !strcmp(optarg, "mldsa65"))
+            pqc = SPDM_ALGORITHMS_PQC_ASYM_ALGO_ML_DSA_65;
+        else if (opt == 'p' && !strcmp(optarg, "mldsa87"))
+            pqc = SPDM_ALGORITHMS_PQC_ASYM_ALGO_ML_DSA_87;
         else {
-            fprintf(stderr, "usage: %s [-k keydir]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-k keydir] [-p mldsa44|mldsa65|mldsa87]\n", argv[0]);
             return 2;
         }
     }
@@ -210,9 +222,18 @@ int main(int argc, char **argv)
     SET(LIBSPDM_DATA_OTHER_PARAMS_SUPPORT, (uint8_t)SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1);
     SET(LIBSPDM_DATA_HEARTBEAT_PERIOD, (uint8_t)30);
     SET(LIBSPDM_DATA_LOCAL_SUPPORTED_SLOT_MASK, (uint8_t)0x01);
-
-    if (!libspdm_read_responder_public_certificate_chain(hash, asym, &chain, &chain_size,
-                                                         NULL, NULL)) {
+    if (pqc) {
+        /* Slot 0 holds one chain, so with -p only ML-DSA is usable: prefer it
+         * and the requester must offer SPDM 1.4 + ML-DSA. */
+        SET(LIBSPDM_DATA_PQC_ASYM_ALGO, pqc);
+        SET(LIBSPDM_DATA_ALGO_PRIORITY_PQC_FIRST, pqc_first);
+        ok = libspdm_read_pqc_responder_public_certificate_chain(hash, pqc, &chain, &chain_size,
+                                                                 NULL, NULL);
+    } else {
+        ok = libspdm_read_responder_public_certificate_chain(hash, asym, &chain, &chain_size,
+                                                             NULL, NULL);
+    }
+    if (!ok) {
         fprintf(stderr, "responder: cannot load sample certificate chain from %s\n", g_key_dir);
         return 1;
     }
@@ -223,8 +244,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    fprintf(stderr, "spdm-test-responder: listening for MCTP type 5/6 (sample keys from %s)\n",
-            g_key_dir);
+    fprintf(stderr, "spdm-test-responder: listening for MCTP type 5/6 (%s sample keys from %s)\n",
+            pqc ? "ML-DSA" : "ECDSA-P384", g_key_dir);
     for (;;) {
         libspdm_return_t st = libspdm_responder_dispatch_message(ctx);
 

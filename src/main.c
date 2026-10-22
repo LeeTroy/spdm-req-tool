@@ -195,6 +195,8 @@ static void add_selected_algos(struct tool *t, node_t *res)
         free(s);                                                  \
     } while (0)
     ALGO("BaseAsymAlgo", LIBSPDM_DATA_BASE_ASYM_ALGO, asym_name);
+    if (spdm_conn_version(ctx) >= 0x14)
+        ALGO("PqcAsymAlgo", LIBSPDM_DATA_PQC_ASYM_ALGO, pqc_name);
     ALGO("BaseHashAlgo", LIBSPDM_DATA_BASE_HASH_ALGO, hash_name);
     ALGO("MeasurementHashAlgo", LIBSPDM_DATA_MEASUREMENT_HASH_ALGO, meas_hash_name);
     ALGO("DHE", LIBSPDM_DATA_DHE_NAME_GROUP, dhe_name);
@@ -733,6 +735,8 @@ static void usage(FILE *f)
 "SPDM:\n"
 "  -V, --spdm-version VER   only negotiate VER (1.0 .. 1.4)\n"
 "      --asym LIST          base asym algorithms, e.g. ecdsa-p384,ecdsa-p256,rsapss-3072\n"
+"      --pqc-asym LIST      SPDM 1.4 PQC asym algorithms, e.g. ml-dsa-87,ml-dsa-65, or none\n"
+"                           (default ml-dsa-44,ml-dsa-65,ml-dsa-87)\n"
 "      --hash LIST          base hash algorithms, e.g. sha-384,sha-256\n"
 "      --dhe LIST           DHE groups, e.g. secp384r1,secp256r1\n"
 "      --aead LIST          AEAD suites, e.g. aes-256-gcm,aes-128-gcm\n"
@@ -803,7 +807,7 @@ static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint
 }
 
 enum {
-    OPT_ASYM = 0x100, OPT_HASH, OPT_DHE, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
+    OPT_ASYM = 0x100, OPT_PQC_ASYM, OPT_HASH, OPT_DHE, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
     OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL,
 };
 
@@ -815,6 +819,7 @@ static const struct option long_opts[] = {
     { "timeout", required_argument, NULL, 't' },
     { "spdm-version", required_argument, NULL, 'V' },
     { "asym", required_argument, NULL, OPT_ASYM },
+    { "pqc-asym", required_argument, NULL, OPT_PQC_ASYM },
     { "hash", required_argument, NULL, OPT_HASH },
     { "dhe", required_argument, NULL, OPT_DHE },
     { "aead", required_argument, NULL, OPT_AEAD },
@@ -930,6 +935,12 @@ int main(int argc, char **argv)
         }
         case OPT_ASYM:
             if (parse_algo_list(optarg, asym_name, &t.sopts.base_asym))
+                return 2;
+            break;
+        case OPT_PQC_ASYM:
+            if (!strcasecmp(optarg, "none"))
+                t.sopts.pqc_asym = 0;
+            else if (parse_algo_list(optarg, pqc_name, &t.sopts.pqc_asym))
                 return 2;
             break;
         case OPT_HASH:

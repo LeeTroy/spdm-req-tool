@@ -34,7 +34,12 @@ cmake --build build-aarch64 -j
 cmake -S . -B build-host && cmake --build build-host -j
 ```
 
-libspdm is built as an ExternalProject (`CRYPTO=mbedtls`, Release, static).
+libspdm is built as an ExternalProject (`CRYPTO=openssl`, Release, static).
+It builds its bundled OpenSSL 3.5 (needed for ML-DSA), and the tool links the
+static `libcrypto.a`. A clean build therefore takes a few minutes longer, and
+the stripped aarch64 binary is about 5 MB. The link prints glibc warnings about
+`dlopen`/`getaddrinfo` in a static binary. They are harmless: the tool never
+reaches those OpenSSL code paths.
 Options: `-DSPDM_STATIC=OFF`, `-DSPDM_TEST_RESPONDER=OFF`, `-DLIBSPDM_TARGET=Debug`.
 
 Deploy to the BMC (`/tmp` by default):
@@ -62,6 +67,7 @@ GET_CERTIFICATE first). Exit status is 0 when no step failed.
 | `-t MS` | minimum response timeout (default 3000) |
 | `-V 1.x` | only negotiate this SPDM version |
 | `--asym/--hash/--dhe/--aead LIST` | restrict algorithms, e.g. `--asym ecdsa-p384` |
+| `--pqc-asym LIST` | SPDM 1.4 PQC algorithms (default `ml-dsa-44,ml-dsa-65,ml-dsa-87`), or `none` |
 | `-s N` | certificate slot |
 | `-m N\|all`, `--no-meas-sig` | measurement index / unsigned measurements |
 | `--meas-summary none\|tcb\|all` | summary hash for CHALLENGE / KEY_EXCHANGE |
@@ -906,6 +912,7 @@ lists the scenarios and the bottom pane shows the selected line in full.*
 demo/spdm-demo.py --ssh root@10.0.0.120 --password 0penBmc -e 44 \
     --trust --root-ca /tmp/ca-cert.pem
 demo/spdm-demo.py --local -e 44                # tool on the same machine
+demo/spdm-demo.py -e 16 --pqc-asym ml-dsa-65   # offer only ML-DSA-65 (test responder -p)
 demo/spdm-demo.py --replay run.jsonl           # offline, e.g. recorded with --record
 ```
 
@@ -916,6 +923,10 @@ demo/spdm-demo.py --replay run.jsonl           # offline, e.g. recorded with --r
   (default 5). Each round is a node showing its `NonceFreshness` results; `x` stops.
 * `t`: toggle the trust anchor (`-r <--root-ca path>`). `5` (Get root CA) saves to
   the same path. `v`: cycle the SPDM version.
+* `p`: cycle `--pqc-asym` between the tool default (all ML-DSA), `none`,
+  `ml-dsa-44`, `ml-dsa-65`, `ml-dsa-87`, and any `--pqc-asym LIST` given at
+  start. The header shows the current value. A responder that does not support
+  the offered PQC algorithm falls back to its traditional one (e.g. ECDSA-P384).
 * Arrow keys / `hjkl` navigate; `Enter`/`Space`/`Right` expand, `Left`
   collapses or jumps to the parent, `e`/`c` expand or collapse a subtree, `E`/`C`
   do the same for everything, `f` follows live output, `?` shows help.
@@ -998,8 +1009,27 @@ Verified with `-V 1.1` through `-V 1.4`: VCA, digests, cert, challenge, signed
 measurements, KEY_EXCHANGE/FINISH, HEARTBEAT, KEY_UPDATE, encrypted measurements
 and END_SESSION. SPDM 1.0 has no sessions; its 5 steps pass.
 
+### ML-DSA test (test responder)
+
+With `-p mldsa44|mldsa65|mldsa87`, the test responder prefers ML-DSA
+(SPDM 1.4 `PqcAsymAlgo`) and serves libspdm's ML-DSA sample chain from slot 0:
+
+```sh
+# from the host
+scp -O libspdm/unit_test/sample_key/mldsa65/* root@10.0.0.120:/tmp/spdm-test/mldsa65/
+# on the BMC
+cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test -p mldsa65 &
+/tmp/spdm-req-tool -e 16 -r /tmp/spdm-test/mldsa65/ca.cert.der all    # 10 steps OK
+kill %1
+```
+
+Verified: `SelectedAlgorithms` shows `BaseAsymAlgo: (none)` and
+`PqcAsymAlgo: ML-DSA-65`. The 16853-byte, 3-certificate ML-DSA chain is
+trusted. CHALLENGE, signed measurements and the KEY_EXCHANGE/FINISH session
+all verify ML-DSA signatures. The requester still offers the traditional
+algorithms, so ECDSA responders (the AST1080) negotiate as before.
+
 ## Notes
 
-* libspdm's mbedTLS build stubs out `snprintf`, so mbedTLS formatters
-  (`x509_dn_gets`, `x509_crt_info`) return empty strings. `cert.c` formats
-  X.509 fields itself.
+* `cert.c` formats X.509 fields itself rather than using OpenSSL's
+  `X509_print`, so names and layout match the rest of the output.

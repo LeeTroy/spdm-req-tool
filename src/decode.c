@@ -216,7 +216,7 @@ static const char *keysched_name(uint32_t bit)
     return bit == SPDM_ALGORITHMS_KEY_SCHEDULE_SPDM ? "SPDM" : NULL;
 }
 
-static const char *pqc_name(uint32_t bit)
+const char *pqc_name(uint32_t bit)
 {
     static const char *n[] = { "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128s",
                                "SLH-DSA-SHAKE-128s", "SLH-DSA-SHA2-128f", "SLH-DSA-SHAKE-128f",

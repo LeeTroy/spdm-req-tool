@@ -13,7 +13,7 @@ option(SPDM_TEST_RESPONDER "Build spdm-test-responder (libspdm sample keys, test
 set(LIBSPDM_TARGET Release CACHE STRING "libspdm build type: Release or Debug")
 
 # ---------------------------------------------------------------------------
-# libspdm (built as its own CMake project, static libraries, mbedTLS crypto)
+# libspdm (built as its own CMake project, static libraries, OpenSSL crypto)
 # ---------------------------------------------------------------------------
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     set(LIBSPDM_ARCH aarch64)
@@ -39,10 +39,7 @@ set(LIBSPDM_LIBS
     spdm_crypt_lib
     spdm_crypt_ext_lib
     spdm_device_secret_lib_null
-    cryptlib_mbedtls
-    mbedtls
-    mbedx509
-    mbedcrypto
+    cryptlib_openssl
     rnglib
     memlib
     malloclib
@@ -53,6 +50,12 @@ set(LIBSPDM_LIB_FILES "")
 foreach(lib ${LIBSPDM_LIBS})
     list(APPEND LIBSPDM_LIB_FILES ${LIBSPDM_LIB_DIR}/lib${lib}.a)
 endforeach()
+
+# libspdm builds OpenSSL (the bundled 3.5.x, which has ML-DSA) and installs both the shared and
+# the static libcrypto; link the static one.
+set(OPENSSL_INSTALL_DIR ${LIBSPDM_BUILD_DIR}/os_stub/openssllib/openssl-install)
+set(OPENSSL_CRYPTO_LIB ${OPENSSL_INSTALL_DIR}/lib/libcrypto.a)
+list(APPEND LIBSPDM_LIB_FILES ${OPENSSL_CRYPTO_LIB})
 
 # Extra libraries for the test responder.
 set(LIBSPDM_RSP_LIBS spdm_responder_lib spdm_device_secret_lib_sample)
@@ -65,7 +68,7 @@ set(LIBSPDM_CMAKE_ARGS
     -DARCH=${LIBSPDM_ARCH}
     -DTOOLCHAIN=${LIBSPDM_TOOLCHAIN}
     -DTARGET=${LIBSPDM_TARGET}
-    -DCRYPTO=mbedtls
+    -DCRYPTO=openssl
     -DDISABLE_TESTS=1
     -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
 )
@@ -84,35 +87,11 @@ ExternalProject_Add(libspdm_ext
     BUILD_ALWAYS OFF
 )
 
-# Must match the definitions libspdm applies to its own targets when CRYPTO=mbedtls,
+# Must match the definitions libspdm applies to its own targets when CRYPTO=openssl,
 # otherwise config-derived sizes (e.g. LIBSPDM_MAX_CERT_CHAIN_SIZE) would differ.
 set(LIBSPDM_APP_DEFS
-    LIBSPDM_SM3_256_SUPPORT=0
-    LIBSPDM_EDDSA_ED25519_SUPPORT=0
-    LIBSPDM_EDDSA_ED448_SUPPORT=0
-    LIBSPDM_SM2_DSA_P256_SUPPORT=0
     LIBSPDM_SM2_KEY_EXCHANGE_P256_SUPPORT=0
     LIBSPDM_AEAD_SM4_128_GCM_SUPPORT=0
-    LIBSPDM_ML_DSA_44_SUPPORT=0
-    LIBSPDM_ML_DSA_65_SUPPORT=0
-    LIBSPDM_ML_DSA_87_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHA2_128S_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHAKE_128S_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHA2_128F_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHAKE_128F_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHA2_192S_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHAKE_192S_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHA2_192F_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHAKE_192F_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHA2_256S_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHAKE_256S_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHA2_256F_SUPPORT=0
-    LIBSPDM_SLH_DSA_SHAKE_256F_SUPPORT=0
-    LIBSPDM_ML_KEM_512_SUPPORT=0
-    LIBSPDM_ML_KEM_768_SUPPORT=0
-    LIBSPDM_ML_KEM_1024_SUPPORT=0
-    LIBSPDM_SKIP_NAME_CONSTRAINTS_CHECK=1
-    "MBEDTLS_CONFIG_FILE=<libspdm_mbedtls_config.h>"
 )
 if(LIBSPDM_TARGET STREQUAL "Release")
     list(APPEND LIBSPDM_APP_DEFS LIBSPDM_DEBUG_ENABLE=0)
@@ -140,9 +119,7 @@ target_include_directories(spdm-req-tool PRIVATE
     ${LIBSPDM_DIR}/include/hal
     ${LIBSPDM_DIR}/os_stub/include
     ${LIBSPDM_DIR}/os_stub
-    ${LIBSPDM_DIR}/os_stub/mbedtlslib/include
-    ${LIBSPDM_DIR}/os_stub/mbedtlslib/include/mbedtls
-    ${LIBSPDM_DIR}/os_stub/mbedtlslib/mbedtls/include
+    ${OPENSSL_INSTALL_DIR}/include
 )
 target_compile_definitions(spdm-req-tool PRIVATE
     ${LIBSPDM_APP_DEFS}

@@ -19,6 +19,7 @@ struct spdm_opts {
     int timeout_ms;          /* minimum response timeout */
     uint8_t version;         /* 0: any, else 0x10..0x14 (max/only version) */
     uint32_t base_asym;
+    uint32_t pqc_asym;       /* SPDM 1.4 PqcAsymAlgo (ML-DSA, SLH-DSA) */
     uint32_t base_hash;
     uint16_t dhe;
     uint16_t aead;
@@ -43,7 +44,7 @@ typedef struct {
     int root_ca_count;
 } spdm_app_t;
 
-/* Defaults for algorithm masks (everything libspdm+mbedTLS supports). */
+/* Defaults for algorithm masks (everything libspdm+OpenSSL supports, minus SLH-DSA). */
 void spdm_opts_defaults(struct spdm_opts *o);
 
 int spdm_app_init(spdm_app_t *app, const struct spdm_opts *o);
