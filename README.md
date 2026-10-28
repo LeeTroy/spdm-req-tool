@@ -1035,6 +1035,37 @@ trusted. CHALLENGE, signed measurements and the KEY_EXCHANGE/FINISH session
 all verify ML-DSA signatures. The requester still offers the traditional
 algorithms, so ECDSA responders (the AST1080) negotiate as before.
 
+### ML-KEM test (test responder)
+
+With `-K mlkem512|mlkem768|mlkem1024`, the test responder also offers that
+ML-KEM and sets `LIBSPDM_DATA_ALGO_PRIORITY_PQC_FIRST`. When the requester
+offers both, it selects the KEM over its DHE group (secp384r1).
+
+```sh
+# from the host
+scp -O libspdm/unit_test/sample_key/mldsa87/* root@10.0.0.120:/tmp/spdm-test/mldsa87/
+# on the BMC
+cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test -e 16 -p mldsa87 -K mlkem1024 &
+/tmp/spdm-req-tool -e 16 -r /tmp/spdm-test/mldsa87/ca.cert.der all    # 10 steps OK
+kill %1
+```
+
+Verified (ML-DSA-87 + ML-KEM-1024, the AST1080's planned pairing):
+
+| Requester options | Selected | Result |
+|---|---|---|
+| default (DHE groups + all ML-KEM offered) | `DHE: (none)`, `KEM: ML-KEM-1024` | all 10 steps |
+| `--dhe none --kem ml-kem-1024` | `KEM: ML-KEM-1024` | session OK |
+| `--kem none` or `--kem ml-kem-768` | `DHE: secp384r1` | session OK |
+| `-l 1 -c 3 session` | `KEM: ML-KEM-1024` | 3 rounds OK |
+| `--dhe none` against a responder without `-K` | none | ALGORITHMS fails (ERROR), as expected |
+
+With ML-KEM-1024, KEY_EXCHANGE is 1638 bytes (1568-byte encapsulation key).
+KEY_EXCHANGE_RSP carries the 1568-byte ciphertext: 1822 bytes with an ECDSA-P384
+signature, or 6353 bytes with ML-DSA-87, which needs CHUNK_GET. `-v` decodes
+both ExchangeData fields. The decoder does not reassemble chunked responses,
+so a chunked KEY_EXCHANGE_RSP is shown as raw chunks.
+
 ## Notes
 
 * `cert.c` formats X.509 fields itself rather than using OpenSSL's
