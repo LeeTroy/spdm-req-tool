@@ -914,6 +914,7 @@ demo/spdm-demo.py --ssh root@10.0.0.120 --password 0penBmc -e 44 \
     --trust --root-ca /tmp/ca-cert.pem
 demo/spdm-demo.py --local -e 44                # tool on the same machine
 demo/spdm-demo.py -e 16 --pqc-asym ml-dsa-65   # offer only ML-DSA-65 (test responder -p)
+demo/spdm-demo.py -e 16 --kem ml-kem-1024      # offer ML-KEM-1024 (test responder -K)
 demo/spdm-demo.py --replay run.jsonl           # offline, e.g. recorded with --record
 ```
 
@@ -928,6 +929,10 @@ demo/spdm-demo.py --replay run.jsonl           # offline, e.g. recorded with --r
   `ml-dsa-44`, `ml-dsa-65`, `ml-dsa-87`, and any `--pqc-asym LIST` given at
   start. The header shows the current value. A responder that does not support
   the offered PQC algorithm falls back to its traditional one (e.g. ECDSA-P384).
+* `m`: cycle the key exchange offer: tool default (DHE groups and all ML-KEM),
+  `none` (DHE only), `ml-kem-1024`, and `ml-kem-1024 only` (adds `--dhe none`, so
+  the session fails unless the responder selects ML-KEM), plus any `--kem LIST`
+  given at start. The header shows it, and Connect shows the selected `DHE`/`KEM`.
 * Arrow keys / `hjkl` navigate; `Enter`/`Space`/`Right` expand, `Left`
   collapses or jumps to the parent, `e`/`c` expand or collapse a subtree, `E`/`C`
   do the same for everything, `f` follows live output, `?` shows help.

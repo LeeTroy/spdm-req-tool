@@ -15,6 +15,7 @@ Examples:
     spdm-demo.py --ssh root@10.0.0.120 --password 0penBmc -e 42
     spdm-demo.py --local -e 42                 # tool runs on this machine
     spdm-demo.py -e 16 --pqc-asym ml-dsa-65    # offer only ML-DSA-65 (SPDM 1.4)
+    spdm-demo.py -e 16 --kem ml-kem-1024       # offer ML-KEM-1024 next to the DHE groups
     spdm-demo.py --replay session.jsonl        # offline replay of a recording
 """
 
@@ -349,6 +350,15 @@ VERSIONS = [None, "1.0", "1.1", "1.2", "1.3", "1.4"]
 # --pqc-asym presets cycled with 'p'; None leaves the tool default (all ML-DSA).
 PQC_PRESETS = [None, "none", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]
 
+# Key exchange presets cycled with 'm': (label, tool options). The Responder picks one
+# DHE group or one KEM; "only" also drops the DHE groups so ML-KEM must be selected.
+KEM_PRESETS = [
+    ("default", []),
+    ("none (DHE only)", ["--kem", "none"]),
+    ("ml-kem-1024", ["--kem", "ml-kem-1024"]),
+    ("ml-kem-1024 only", ["--dhe", "none", "--kem", "ml-kem-1024"]),
+]
+
 HELP = [
     ("1-8, a", "run a scenario (a = all)"),
     ("l", "loop challenge + measurements (x stops)"),
@@ -356,6 +366,7 @@ HELP = [
     ("t", "toggle trust anchor (--root-ca)"),
     ("v", "cycle SPDM version (auto/1.0../1.4)"),
     ("p", "cycle PQC asym algorithms (--pqc-asym)"),
+    ("m", "cycle key exchange: DHE / ML-KEM (--kem, --dhe none)"),
     ("Up/Down j/k", "move"),
     ("PgUp/PgDn", "page"),
     ("Right/l/Enter", "expand / toggle"),
@@ -383,6 +394,13 @@ class App:
         if args.pqc_asym and args.pqc_asym not in self.pqc_presets:
             self.pqc_presets.append(args.pqc_asym)
         self.pqc_idx = self.pqc_presets.index(args.pqc_asym)
+        self.kem_presets = list(KEM_PRESETS)
+        self.kem_idx = 0
+        if args.kem:
+            opts = ["--kem", args.kem]
+            if opts not in [o for _, o in self.kem_presets]:
+                self.kem_presets.append((args.kem, opts))
+            self.kem_idx = [o for _, o in self.kem_presets].index(opts)
         self.last = None
         self.status = "Press 1-8 or 'a' to run a scenario, '?' for help"
         self.show_help = False
@@ -402,6 +420,7 @@ class App:
         pqc = self.pqc_presets[self.pqc_idx]
         if pqc:
             extra += ["--pqc-asym", pqc]
+        extra += self.kem_presets[self.kem_idx][1]
         if self.looping:
             extra += ["--loop", str(self.args.loop_interval)]
         return extra
@@ -461,6 +480,7 @@ class App:
         line1 = [(" SPDM Requester Demo ", C_RUN), ("  libspdm over AF_MCTP", C_DIM)]
         line2 = [(" target: ", C_DIM), (target, C_HI), ("   EID: ", C_DIM), (str(a.eid), C_HI),
                  ("   SPDM: ", C_DIM), (v, C_HI), ("   PQC: ", C_DIM), (pqc, C_HI),
+                 ("   KEM: ", C_DIM), (self.kem_presets[self.kem_idx][0], C_HI),
                  ("   trust anchor: ", C_DIM),
                  (("ON " + a.root_ca) if self.trust else "off", C_OK if self.trust else C_WARN)]
         return [line1, line2]
@@ -684,6 +704,13 @@ def handle_key(app, ch, lines, page):
         pqc = app.pqc_presets[app.pqc_idx]
         app.status = "PQC asym: %s" % (pqc or "tool default (ml-dsa-44,ml-dsa-65,ml-dsa-87)")
         return True
+    if ch == ord("m"):
+        app.kem_idx = (app.kem_idx + 1) % len(app.kem_presets)
+        label, opts = app.kem_presets[app.kem_idx]
+        app.status = "key exchange: %s%s" % (
+            label, " (%s)" % " ".join(opts) if opts else
+            " (tool default: DHE groups + ml-kem-512,ml-kem-768,ml-kem-1024)")
+        return True
     if ch == ord("x") and app.runner:
         if app.runner.busy():
             app.runner.stop()
@@ -777,6 +804,9 @@ def main():
     p.add_argument("--pqc-asym", metavar="LIST",
                    help="SPDM 1.4 PQC asym algorithms passed to the tool, e.g. ml-dsa-65 or "
                         "ml-dsa-87,ml-dsa-65, or none (default: tool default; 'p' cycles presets)")
+    p.add_argument("--kem", metavar="LIST",
+                   help="SPDM 1.4 KEM algorithms passed to the tool, e.g. ml-kem-1024, or none "
+                        "(default: tool default; 'm' cycles presets)")
     p.add_argument("--record", metavar="FILE", help="append the raw JSON events to FILE")
     p.add_argument("--loop-interval", type=int, default=5, metavar="SEC",
                    help="seconds between rounds of the loop scenario 'l' (default 5)")
