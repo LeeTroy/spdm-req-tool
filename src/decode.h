@@ -27,6 +27,7 @@ void decode_caps(node_t *parent, const char *key, uint32_t flags, bool is_reques
 void decode_versions(node_t *parent, const uint8_t *entries, int count);
 const char *asym_name(uint32_t bit);
 const char *pqc_name(uint32_t bit);
+const char *kem_name(uint32_t bit);
 const char *hash_name(uint32_t bit);
 const char *meas_hash_name(uint32_t bit);
 const char *dhe_name(uint32_t bit);

@@ -231,7 +231,7 @@ const char *pqc_name(uint32_t bit)
     return NULL;
 }
 
-static const char *kem_name(uint32_t bit)
+const char *kem_name(uint32_t bit)
 {
     switch (bit) {
     case 1: return "ML-KEM-512";

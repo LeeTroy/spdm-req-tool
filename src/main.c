@@ -200,6 +200,8 @@ static void add_selected_algos(struct tool *t, node_t *res)
     ALGO("BaseHashAlgo", LIBSPDM_DATA_BASE_HASH_ALGO, hash_name);
     ALGO("MeasurementHashAlgo", LIBSPDM_DATA_MEASUREMENT_HASH_ALGO, meas_hash_name);
     ALGO("DHE", LIBSPDM_DATA_DHE_NAME_GROUP, dhe_name);
+    if (spdm_conn_version(ctx) >= 0x14)
+        ALGO("KEM", LIBSPDM_DATA_KEM_ALG, kem_name);
     ALGO("AEAD", LIBSPDM_DATA_AEAD_CIPHER_SUITE, aead_name);
     ALGO("ReqBaseAsymAlg", LIBSPDM_DATA_REQ_BASE_ASYM_ALG, asym_name);
 #undef ALGO
@@ -738,7 +740,9 @@ static void usage(FILE *f)
 "      --pqc-asym LIST      SPDM 1.4 PQC asym algorithms, e.g. ml-dsa-87,ml-dsa-65, or none\n"
 "                           (default ml-dsa-44,ml-dsa-65,ml-dsa-87)\n"
 "      --hash LIST          base hash algorithms, e.g. sha-384,sha-256\n"
-"      --dhe LIST           DHE groups, e.g. secp384r1,secp256r1\n"
+"      --dhe LIST           DHE groups, e.g. secp384r1,secp256r1, or none (KEM only)\n"
+"      --kem LIST           SPDM 1.4 KEM algorithms, e.g. ml-kem-1024, or none\n"
+"                           (default ml-kem-512,ml-kem-768,ml-kem-1024)\n"
 "      --aead LIST          AEAD suites, e.g. aes-256-gcm,aes-128-gcm\n"
 "  -s, --slot N             certificate slot (default 0)\n"
 "  -m, --meas-index N|all   measurement index (default all)\n"
@@ -807,7 +811,7 @@ static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint
 }
 
 enum {
-    OPT_ASYM = 0x100, OPT_PQC_ASYM, OPT_HASH, OPT_DHE, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
+    OPT_ASYM = 0x100, OPT_PQC_ASYM, OPT_HASH, OPT_DHE, OPT_KEM, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
     OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL,
 };
 
@@ -822,6 +826,7 @@ static const struct option long_opts[] = {
     { "pqc-asym", required_argument, NULL, OPT_PQC_ASYM },
     { "hash", required_argument, NULL, OPT_HASH },
     { "dhe", required_argument, NULL, OPT_DHE },
+    { "kem", required_argument, NULL, OPT_KEM },
     { "aead", required_argument, NULL, OPT_AEAD },
     { "slot", required_argument, NULL, 's' },
     { "meas-index", required_argument, NULL, 'm' },
@@ -948,9 +953,17 @@ int main(int argc, char **argv)
                 return 2;
             break;
         case OPT_DHE:
-            if (parse_algo_list(optarg, dhe_name, &v32))
+            if (!strcasecmp(optarg, "none"))
+                v32 = 0;
+            else if (parse_algo_list(optarg, dhe_name, &v32))
                 return 2;
             t.sopts.dhe = (uint16_t)v32;
+            break;
+        case OPT_KEM:
+            if (!strcasecmp(optarg, "none"))
+                t.sopts.kem = 0;
+            else if (parse_algo_list(optarg, kem_name, &t.sopts.kem))
+                return 2;
             break;
         case OPT_AEAD:
             if (parse_algo_list(optarg, aead_name, &v32))

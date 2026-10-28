@@ -66,8 +66,9 @@ GET_CERTIFICATE first). Exit status is 0 when no step failed.
 | `-i IFNAME [-L LLADDR]` | bypass routing, send on the interface (extended addressing) |
 | `-t MS` | minimum response timeout (default 3000) |
 | `-V 1.x` | only negotiate this SPDM version |
-| `--asym/--hash/--dhe/--aead LIST` | restrict algorithms, e.g. `--asym ecdsa-p384` |
+| `--asym/--hash/--dhe/--aead LIST` | restrict algorithms, e.g. `--asym ecdsa-p384`; `--dhe none` offers no DHE group (KEM only) |
 | `--pqc-asym LIST` | SPDM 1.4 PQC algorithms (default `ml-dsa-44,ml-dsa-65,ml-dsa-87`), or `none` |
+| `--kem LIST` | SPDM 1.4 KEM algorithms (default `ml-kem-512,ml-kem-768,ml-kem-1024`), or `none`. The Responder selects one DHE group or one KEM, never both (DSP0274 Table 27) |
 | `-s N` | certificate slot |
 | `-m N\|all`, `--no-meas-sig` | measurement index / unsigned measurements |
 | `--meas-summary none\|tcb\|all` | summary hash for CHALLENGE / KEY_EXCHANGE |

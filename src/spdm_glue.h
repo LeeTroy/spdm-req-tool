@@ -21,7 +21,8 @@ struct spdm_opts {
     uint32_t base_asym;
     uint32_t pqc_asym;       /* SPDM 1.4 PqcAsymAlgo (ML-DSA, SLH-DSA) */
     uint32_t base_hash;
-    uint16_t dhe;
+    uint16_t dhe;            /* 0: offer no DHE group (KEM only) */
+    uint32_t kem;            /* SPDM 1.4 KEMAlg (ML-KEM) */
     uint16_t aead;
     uint32_t meas_hash;
     bool no_session_caps;    /* do not advertise KEY_EX/ENCRYPT/MAC */
