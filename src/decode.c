@@ -71,7 +71,7 @@ static const struct code_name codes[] = {
     { 0xE1, "GET_CAPABILITIES", "Exchange capabilities" },
     { 0xE2, "GET_SUPPORTED_EVENT_TYPES", "Request supported event types" },
     { 0xE3, "NEGOTIATE_ALGORITHMS", "Negotiate cryptographic algorithms" },
-    { 0xE4, "KEY_EXCHANGE", "Start secure session (DHE)" },
+    { 0xE4, "KEY_EXCHANGE", "Start secure session (DHE or KEM)" },
     { 0xE5, "FINISH", "Complete session handshake" },
     { 0xE6, "PSK_EXCHANGE", "Start secure session (PSK)" },
     { 0xE7, "PSK_FINISH", "Complete PSK handshake" },
@@ -437,9 +437,19 @@ static uint32_t neg_sig_size(void *ctx)
     return libspdm_get_asym_signature_size(spdm_conn_u32(ctx, LIBSPDM_DATA_BASE_ASYM_ALGO));
 }
 
-static uint32_t neg_dhe_size(void *ctx)
+/* KEY_EXCHANGE(_RSP) ExchangeData: a DHE public value, or with a negotiated KEM the
+ * Requester's encapsulation key ek (request) or the ciphertext c (response). */
+static void take_exchange_data(void *ctx, rd_t *r, bool req)
 {
-    return libspdm_get_dhe_pub_key_size((uint16_t)spdm_conn_u32(ctx, LIBSPDM_DATA_DHE_NAME_GROUP));
+    uint32_t kem = spdm_conn_u32(ctx, LIBSPDM_DATA_KEM_ALG);
+
+    if (kem && req)
+        take_hex(r, "ExchangeData (KEM encapsulation key)", libspdm_get_kem_encap_key_size(kem));
+    else if (kem)
+        take_hex(r, "ExchangeData (KEM ciphertext)", libspdm_get_kem_cipher_text_size(kem));
+    else
+        take_hex(r, "ExchangeData (DHE public key)",
+                 libspdm_get_dhe_pub_key_size((uint16_t)spdm_conn_u32(ctx, LIBSPDM_DATA_DHE_NAME_GROUP)));
 }
 
 /* MeasurementSummaryHash is present only if requested and the responder has MEAS_CAP. */
@@ -921,7 +931,7 @@ static void dec_key_exchange(void *ctx, rd_t *r, uint8_t ver, uint8_t p1, uint8_
         node_add(r->n, "SessionPolicy", "0x%02x%s", policy,
                  policy & 1 ? " (TerminationPolicy: keep on runtime update)" : "");
     take_hex(r, "RandomData", 32);
-    take_hex(r, "ExchangeData (DHE public key)", neg_dhe_size(ctx));
+    take_exchange_data(ctx, r, true);
     olen = take16(r, &ok);
     if (!ok)
         return;
@@ -951,7 +961,7 @@ static void dec_key_exchange_rsp(void *ctx, rd_t *r, uint8_t ver, uint8_t p1)
     if (mut)
         node_add(r->n, "ReqSlotIDParam", "%u", slot & 0xf);
     take_hex(r, "RandomData", 32);
-    take_hex(r, "ExchangeData (DHE public key)", neg_dhe_size(ctx));
+    take_exchange_data(ctx, r, false);
     take_hex(r, "MeasurementSummaryHash", meas_summary_size(ctx, g_req.kex_hash_type));
     olen = take16(r, &ok);
     if (!ok)
