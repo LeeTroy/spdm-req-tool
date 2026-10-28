@@ -1001,10 +1001,15 @@ loop traffic to its own local EID:
 scp -O build-aarch64/spdm-test-responder root@10.0.0.120:/tmp/spdm-test/
 scp -O libspdm/unit_test/sample_key/ecp384/* root@10.0.0.120:/tmp/spdm-test/ecp384/
 # on the BMC
-cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test &
+cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test -e 16 &
 /tmp/spdm-req-tool -e 16 -r /tmp/spdm-test/ecp384/ca.cert.der all     # 10 steps OK
 kill %1
 ```
+
+`-e 16` binds the responder to that local EID only. The BMC's `spdmd` holds
+the any-address SPDM binding, so without `-e` the responder fails with
+`bind type 5: Address already in use`. The more specific binding receives the
+traffic for EID 16, and `spdmd` keeps working.
 
 Verified with `-V 1.1` through `-V 1.4`: VCA, digests, cert, challenge, signed
 measurements, KEY_EXCHANGE/FINISH, HEARTBEAT, KEY_UPDATE, encrypted measurements
@@ -1019,7 +1024,7 @@ With `-p mldsa44|mldsa65|mldsa87`, the test responder prefers ML-DSA
 # from the host
 scp -O libspdm/unit_test/sample_key/mldsa65/* root@10.0.0.120:/tmp/spdm-test/mldsa65/
 # on the BMC
-cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test -p mldsa65 &
+cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test -e 16 -p mldsa65 &
 /tmp/spdm-req-tool -e 16 -r /tmp/spdm-test/mldsa65/ca.cert.der all    # 10 steps OK
 kill %1
 ```

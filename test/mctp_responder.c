@@ -4,7 +4,10 @@
  * sessions). Uses libspdm's sample keys, so it must never be deployed as a
  * real device.
  *
- *   spdm-test-responder [-k KEYDIR] [-p mldsa44|mldsa65|mldsa87]
+ *   spdm-test-responder [-k KEYDIR] [-e EID] [-p mldsa44|mldsa65|mldsa87]
+ *
+ * -e binds to that local EID only, so the responder can run next to a daemon
+ * (e.g. spdmd) that already holds the any-address SPDM binding.
  *
  * KEYDIR contains ecp384/ (and mldsa44/, mldsa65/, mldsa87/ for -p). The
  * requester then talks to a local EID of this host, e.g.
@@ -39,6 +42,7 @@ static struct sockaddr_mctp g_peer;
 static uint8_t *g_send_buf, *g_recv_buf;
 static size_t g_buf_size;
 static const char *g_key_dir = ".";
+static uint8_t g_local_eid = MCTP_ADDR_ANY;
 
 bool libspdm_read_input_file(const char *file_name, void **file_data, size_t *file_size)
 {
@@ -85,7 +89,7 @@ static int open_bound(uint8_t type)
     memset(&addr, 0, sizeof(addr));
     addr.smctp_family = AF_MCTP;
     addr.smctp_network = MCTP_NET_ANY;
-    addr.smctp_addr.s_addr = MCTP_ADDR_ANY;
+    addr.smctp_addr.s_addr = g_local_eid;
     addr.smctp_type = type;
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr))) {
         fprintf(stderr, "responder: bind type %u: %s\n", type, strerror(errno));
@@ -155,9 +159,11 @@ int main(int argc, char **argv)
     bool ok;
     int opt;
 
-    while ((opt = getopt(argc, argv, "k:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "k:e:p:")) != -1) {
         if (opt == 'k')
             g_key_dir = optarg;
+        else if (opt == 'e')
+            g_local_eid = (uint8_t)strtoul(optarg, NULL, 0);
         else if (opt == 'p' && !strcmp(optarg, "mldsa44"))
             pqc = SPDM_ALGORITHMS_PQC_ASYM_ALGO_ML_DSA_44;
         else if (opt == 'p' && !strcmp(optarg, "mldsa65"))
@@ -165,7 +171,8 @@ int main(int argc, char **argv)
         else if (opt == 'p' && !strcmp(optarg, "mldsa87"))
             pqc = SPDM_ALGORITHMS_PQC_ASYM_ALGO_ML_DSA_87;
         else {
-            fprintf(stderr, "usage: %s [-k keydir] [-p mldsa44|mldsa65|mldsa87]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-k keydir] [-e eid] [-p mldsa44|mldsa65|mldsa87]\n",
+                    argv[0]);
             return 2;
         }
     }
