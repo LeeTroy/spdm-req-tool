@@ -17,6 +17,7 @@ Examples:
     spdm-demo.py -e 16 --pqc-asym ml-dsa-65    # offer only ML-DSA-65 (SPDM 1.4)
     spdm-demo.py -e 16 --kem ml-kem-1024       # offer ML-KEM-1024 next to the DHE groups
     spdm-demo.py -e 33 --csr-key-id 2 --run 9  # Caliptra VDM, CSR for device key 2
+    spdm-demo.py -e 33 --mbx-read 0x60,0x01 --run 0  # Intel PFR mailbox in a session
     spdm-demo.py --replay session.jsonl        # offline replay of a recording
 """
 
@@ -211,7 +212,8 @@ class Model:
         name = ev.get("name", "?")
         segs = [("→ " if req else "← ", C_REQ if req else C_RSP),
                 (name, C_ERR if name.startswith("ERROR") else (C_REQ if req else C_RSP)),
-                ("  v%s  %d B" % (ev.get("ver", "?"), ev.get("len", 0)), C_DIM)]
+                ("  %s  %d B" % ("v" + ev["ver"] if ev.get("ver") else "app", ev.get("len", 0)),
+                 C_DIM)]
         if ev.get("session"):
             segs.append(("  [secured %s]" % ev["session"], C_SESSION))
         m = self._container().add(Node(segs, kind="msg",
@@ -362,6 +364,8 @@ SCENARIOS = [
     ("7", "Measurements", ["meas"], "signed GET_MEASUREMENTS"),
     ("8", "Secure session", ["session"], "KEY_EXCHANGE / FINISH ..."),
     ("9", "Caliptra VDM", ["caliptra-vdm"], "attestation + CSR in session"),
+    ("0", "Intel PFR mailbox", ["intel-mbx"], "reads: clear vs in session"),
+    ("n", "Mailbox negatives", ["--mbx-negative", "intel-mbx"], "messages that must be refused"),
     ("a", "Run all", ["all"], "full attestation flow"),
     ("l", "Loop attestation", ["challenge", "meas"], "repeat, fresh nonces"),
 ]
@@ -381,7 +385,7 @@ KEM_PRESETS = [
 ]
 
 HELP = [
-    ("1-9, a", "run a scenario (a = all)"),
+    ("0-9, a, n", "run a scenario (a = all)"),
     ("l", "loop challenge + measurements (x stops)"),
     ("r", "re-run the last scenario"),
     ("t", "toggle trust anchor (--root-ca)"),
@@ -423,7 +427,7 @@ class App:
                 self.kem_presets.append((args.kem, opts))
             self.kem_idx = [o for _, o in self.kem_presets].index(opts)
         self.last = None
-        self.status = "Press 1-9 or 'a' to run a scenario, '?' for help"
+        self.status = "Press 0-9 or 'a' to run a scenario, '?' for help"
         self.show_help = False
         self.spin = 0
         self.looping = False
@@ -437,6 +441,11 @@ class App:
             extra += ["-R", self.args.root_ca]
         if "caliptra-vdm" in cmds and self.args.csr_key_id is not None:
             extra += ["--csr-key-id", str(self.args.csr_key_id)]
+        if "intel-mbx" in cmds:
+            if self.args.mbx_read:
+                extra += ["--mbx-read", self.args.mbx_read]
+            if self.args.mbx_write:
+                extra += ["--mbx-write", self.args.mbx_write]
         v = VERSIONS[self.version_idx]
         if v:
             extra += ["-V", v]
@@ -838,7 +847,14 @@ def main():
     p.add_argument("--record", metavar="FILE", help="append the raw JSON events to FILE")
     p.add_argument("--loop-interval", type=int, default=5, metavar="SEC",
                    help="seconds between rounds of the loop scenario 'l' (default 5)")
-    p.add_argument("--run", dest="autorun", metavar="KEY", help="start scenario KEY (1-9, a, l)")
+    p.add_argument("--mbx-read", metavar="LIST",
+                   help="Intel PFR mailbox registers for scenarios 0 and n, ADDR[:LEN],... "
+                        "(default: tool default 0x60,0x00)")
+    p.add_argument("--mbx-write", metavar="A=HEX",
+                   help="scenarios 0 and n also write HEX to register A in the session and "
+                        "read it back (the tool refuses 0x09/0x80 to 0x60)")
+    p.add_argument("--run", dest="autorun", metavar="KEY",
+                   help="start scenario KEY (0-9, a, l, n)")
     p.add_argument("--snapshot", choices=["folded", "all"],
                    help="no TUI: render the tree to stdout (with --replay or --run)")
     p.add_argument("--no-color", action="store_true", help="with --snapshot: plain text")
