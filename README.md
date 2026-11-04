@@ -935,12 +935,18 @@ demo/spdm-demo.py --ssh root@10.0.0.120 --password 0penBmc -e 44 \
 demo/spdm-demo.py --local -e 44                # tool on the same machine
 demo/spdm-demo.py -e 16 --pqc-asym ml-dsa-65   # offer only ML-DSA-65 (test responder -p)
 demo/spdm-demo.py -e 16 --kem ml-kem-1024      # offer ML-KEM-1024 (test responder -K)
+demo/spdm-demo.py -e 33 --csr-key-id 2 -- -V 1.3  # Caliptra VDM (9) with CSR key id 2
 demo/spdm-demo.py --replay run.jsonl           # offline, e.g. recorded with --record
 ```
 
-* `1`-`8`/`a`: run a scenario (version, VCA, digests, certificates, get root
-  CA, challenge, measurements, secure session, all). Each run is a tree node;
-  older runs fold away.
+* `1`-`9`/`a`: run a scenario (version, VCA, digests, certificates, get root
+  CA, challenge, measurements, secure session, Caliptra VDM, all). Each run is
+  a tree node; older runs fold away.
+* `9` runs `caliptra-vdm`: the `vdm-*` steps show the evidence format bitmap,
+  the EAT and CSR sizes and whether they are bound to the requester nonce.
+  `--csr-key-id N` is passed through. A responder without Caliptra VDM (SPDM
+  ERROR UnsupportedRequest for VENDOR_DEFINED_REQUEST) shows those steps as
+  `N/A` with "not supported"; the tool still counts them as failed.
 * `l`: loop challenge + signed measurements every `--loop-interval` seconds
   (default 5). Each round is a node showing its `NonceFreshness` results; `x` stops.
 * `t`: toggle the trust anchor (`-r <--root-ca path>`). `5` (Get root CA) saves to

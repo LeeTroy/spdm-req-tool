@@ -16,6 +16,7 @@ Examples:
     spdm-demo.py --local -e 42                 # tool runs on this machine
     spdm-demo.py -e 16 --pqc-asym ml-dsa-65    # offer only ML-DSA-65 (SPDM 1.4)
     spdm-demo.py -e 16 --kem ml-kem-1024       # offer ML-KEM-1024 next to the DHE groups
+    spdm-demo.py -e 33 --csr-key-id 2 --run 9  # Caliptra VDM, CSR for device key 2
     spdm-demo.py --replay session.jsonl        # offline replay of a recording
 """
 
@@ -45,6 +46,8 @@ STATUS_BADGE = {
     "ok": (" OK ", C_OK), "warn": ("WARN", C_WARN), "fail": ("FAIL", C_ERR),
     "skip": ("SKIP", C_DIM), "run": (" .. ", C_HI),
 }
+# Shown for a Caliptra VDM step the responder rejects with ERROR UnsupportedRequest.
+BADGE_UNSUPPORTED = ("N/A ", C_WARN)
 
 HEX_INLINE = 48  # hex chars shown inline before folding into rows
 
@@ -116,6 +119,7 @@ class Model:
         self.mctp = [0, 0]
         self.rounds_done = 0
         self.done = None
+        self.vdm_unsupported = 0
 
     def start_run(self, title):
         for r in self.root.children:     # fold older runs
@@ -128,6 +132,7 @@ class Model:
         self.mctp = [0, 0]
         self.rounds_done = 0
         self.done = None
+        self.vdm_unsupported = 0
         return self.run
 
     def _parent(self):
@@ -226,12 +231,17 @@ class Model:
     def _step_end(self, ev):
         st = ev.get("status", "?")
         badge, role = STATUS_BADGE.get(st, ("?", C_NORMAL))
+        summary = ev.get("summary", "")
+        if st == "fail" and vdm_unsupported(ev):
+            badge, role = BADGE_UNSUPPORTED
+            summary = "not supported: the responder rejects Caliptra VDM " \
+                      "(SPDM ERROR UnsupportedRequest for VENDOR_DEFINED_REQUEST)"
+            self.vdm_unsupported += 1
         if self.step is None:
             self.event({"ev": "step_begin", "title": ev.get("id", "")})
         step = self.step
         title = step.segs[-1][0]
         step.segs = [("[", C_NORMAL), (badge, role), ("] ", C_NORMAL), (title, C_STEP)]
-        summary = ev.get("summary", "")
         step.detail = "%s\n%s" % (title, summary)
         step.add(Node([("↳ ", role), (summary, role)], detail=summary))
         result = ev.get("result") or []
@@ -242,6 +252,16 @@ class Model:
         step.expanded = st in ("fail", "warn")
         self.stats[st] = self.stats.get(st, 0) + 1
         self.step = None
+
+
+def vdm_unsupported(ev):
+    """A vdm-* step that failed with SPDM ERROR UnsupportedRequest (0x07) for
+    VENDOR_DEFINED_REQUEST (0xfe): the responder has no Caliptra VDM."""
+    if not ev.get("id", "").startswith("vdm-"):
+        return False
+    return any(it.get("k") == "Error" and
+               (it.get("v") or "").startswith("SPDM ERROR 0x07 (data 0xfe)")
+               for it in ev.get("result") or [])
 
 
 def visible(node, depth=0, out=None):
@@ -341,6 +361,7 @@ SCENARIOS = [
     ("6", "Challenge", ["challenge"], "authenticate responder"),
     ("7", "Measurements", ["meas"], "signed GET_MEASUREMENTS"),
     ("8", "Secure session", ["session"], "KEY_EXCHANGE / FINISH ..."),
+    ("9", "Caliptra VDM", ["caliptra-vdm"], "attestation + CSR in session"),
     ("a", "Run all", ["all"], "full attestation flow"),
     ("l", "Loop attestation", ["challenge", "meas"], "repeat, fresh nonces"),
 ]
@@ -360,7 +381,7 @@ KEM_PRESETS = [
 ]
 
 HELP = [
-    ("1-8, a", "run a scenario (a = all)"),
+    ("1-9, a", "run a scenario (a = all)"),
     ("l", "loop challenge + measurements (x stops)"),
     ("r", "re-run the last scenario"),
     ("t", "toggle trust anchor (--root-ca)"),
@@ -402,7 +423,7 @@ class App:
                 self.kem_presets.append((args.kem, opts))
             self.kem_idx = [o for _, o in self.kem_presets].index(opts)
         self.last = None
-        self.status = "Press 1-8 or 'a' to run a scenario, '?' for help"
+        self.status = "Press 1-9 or 'a' to run a scenario, '?' for help"
         self.show_help = False
         self.spin = 0
         self.looping = False
@@ -414,6 +435,8 @@ class App:
             extra += ["-r", self.args.root_ca]
         if "get-root-ca" in cmds:
             extra += ["-R", self.args.root_ca]
+        if "caliptra-vdm" in cmds and self.args.csr_key_id is not None:
+            extra += ["--csr-key-id", str(self.args.csr_key_id)]
         v = VERSIONS[self.version_idx]
         if v:
             extra += ["-V", v]
@@ -464,6 +487,8 @@ class App:
                 if d:
                     self.status = "finished: %d passed, %d warnings, %d failed" % (
                         d.get("passed", 0), d.get("warned", 0), d.get("failed", 0))
+                    if self.model.vdm_unsupported:
+                        self.status += " (responder does not support Caliptra VDM)"
                 else:
                     self.status = "command exited (rc=%s)" % self.runner.proc.returncode
                 changed = True
@@ -807,10 +832,13 @@ def main():
     p.add_argument("--kem", metavar="LIST",
                    help="SPDM 1.4 KEM algorithms passed to the tool, e.g. ml-kem-1024, or none "
                         "(default: tool default; 'm' cycles presets)")
+    p.add_argument("--csr-key-id", type=int, metavar="N",
+                   help="device key id for the Caliptra VDM EXPORT_ATTESTED_CSR (scenario 9; "
+                        "default: tool default 1)")
     p.add_argument("--record", metavar="FILE", help="append the raw JSON events to FILE")
     p.add_argument("--loop-interval", type=int, default=5, metavar="SEC",
                    help="seconds between rounds of the loop scenario 'l' (default 5)")
-    p.add_argument("--run", dest="autorun", metavar="KEY", help="start scenario KEY (1-8, a, l)")
+    p.add_argument("--run", dest="autorun", metavar="KEY", help="start scenario KEY (1-9, a, l)")
     p.add_argument("--snapshot", choices=["folded", "all"],
                    help="no TUI: render the tree to stdout (with --replay or --run)")
     p.add_argument("--no-color", action="store_true", help="with --snapshot: plain text")
