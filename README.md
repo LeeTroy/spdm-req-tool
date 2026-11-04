@@ -53,7 +53,8 @@ BMC=root@10.0.0.120 BMC_PASS=0penBmc scripts/deploy.sh
 ```
 spdm-req-tool -e EID [options] COMMAND [COMMAND...]
 
-  version | connect | digests | cert | get-root-ca | challenge | meas | session | all
+  version | connect | digests | cert | get-root-ca | challenge | meas | session |
+  caliptra-vdm | all
 ```
 
 Prerequisites run automatically (e.g. `challenge` performs VCA, GET_DIGESTS and
@@ -81,6 +82,7 @@ GET_CERTIFICATE first). Exit status is 0 when no step failed.
 | `--color auto\|always\|never` | colored output (auto: only on a terminal, honours `NO_COLOR`) |
 | `-q` | quiet: one line per step (and per loop round), no details; errors still go to stderr |
 | `-l SEC`, `-c N`, `--loop-full` | loop mode (see below) |
+| `--csr-key-id N` | device key id for `caliptra-vdm` EXPORT_ATTESTED_CSR (default 1) |
 
 ### Root CA (certificate chain verification)
 
@@ -99,6 +101,24 @@ chain is not anchored in anything you trust. The result is reported as **WARN**.
 ```sh
 spdm-req-tool -e 42 get-root-ca -R /tmp/ast1080-root.pem
 spdm-req-tool -e 42 -r /tmp/ast1080-root.pem all
+```
+
+### Caliptra VDM in a secure session
+
+`caliptra-vdm` opens a secure session and sends Caliptra VDM commands (the
+OCP command registry: SPDM VENDOR_DEFINED_REQUEST, standard id IANA, vendor
+id 0xA67F) inside it, then ends the session:
+
+- GET_ATTESTATION with evidence format 0: the supported-format bitmap
+- GET_ATTESTATION for an OCP EAT signed with ECC P-384, checking that the
+  requester nonce is in the signed data
+- EXPORT_ATTESTED_CSR (ECC P-384, `--csr-key-id`), with the same nonce check
+
+A responder that does not serve Caliptra VDM answers with SPDM ERROR
+UnsupportedRequest (0x07), and the steps fail.
+
+```
+spdm-req-tool -e 42 -r /tmp/ast1080-root.pem caliptra-vdm
 ```
 
 ### Loop mode (fresh nonces every round)

@@ -35,6 +35,7 @@ struct tool {
     int root_ca_count;
     const char *save_root_ca;
     const char *save_chain;
+    uint32_t csr_key_id;        /* caliptra-vdm EXPORT_ATTESTED_CSR */
 
     /* state */
     bool connected;
@@ -691,6 +692,246 @@ static int step_session(struct tool *t)
     return 0;
 }
 
+/* -------------------------------------------------------- caliptra-vdm */
+
+/* Caliptra VDM (OCP command registry): SPDM VENDOR_DEFINED_REQUEST with
+ * standard id IANA and vendor id 0xA67F; the payload is
+ * command_version(1) | command_code | data, and the response payload is
+ * command_version | command_code | completion_code | data. */
+#define CALIPTRA_VDM_STANDARD_IANA 0x0004
+#define CALIPTRA_VDM_VENDOR_ID 0xA67Fu
+#define CALIPTRA_VDM_VERSION 0x01
+#define CALIPTRA_VDM_GET_ATTESTATION 0x05
+#define CALIPTRA_VDM_EXPORT_ATTESTED_CSR 0x08
+#define CALIPTRA_VDM_RSP_MAX 0x4000
+
+static const char *caliptra_cc_str(uint8_t cc)
+{
+    switch (cc) {
+    case 0x00: return "Success";
+    case 0x01: return "GeneralError";
+    case 0x02: return "InvalidParameter";
+    case 0x03: return "InvalidPayloadSize";
+    case 0x04: return "InsufficientResources";
+    case 0x05: return "UnsupportedOperation";
+    default: return "error";
+    }
+}
+
+static void put_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+/* Sends one Caliptra VDM command (in session sid, or in the clear when NULL).
+ * Returns the response payload after the completion code in *data / *data_len,
+ * or -1 with the reason added to res. */
+static int caliptra_vdm(struct tool *t, const uint32_t *sid, node_t *res, uint8_t cmd,
+                        const uint8_t *data, size_t data_len, uint8_t *rsp, const uint8_t **out,
+                        size_t *out_len)
+{
+    uint8_t req[128];
+    size_t n = 0, rsp_len = CALIPTRA_VDM_RSP_MAX, plen;
+    const uint8_t *p;
+    libspdm_return_t st;
+
+    if (data_len > sizeof(req) - 16)
+        return -1;
+    req[n++] = spdm_conn_version(t->app.ctx);
+    req[n++] = SPDM_VENDOR_DEFINED_REQUEST;
+    req[n++] = 0;
+    req[n++] = 0;
+    req[n++] = CALIPTRA_VDM_STANDARD_IANA & 0xff;
+    req[n++] = CALIPTRA_VDM_STANDARD_IANA >> 8;
+    req[n++] = 4;
+    put_le32(req + n, CALIPTRA_VDM_VENDOR_ID);
+    n += 4;
+    req[n++] = (uint8_t)(data_len + 2);
+    req[n++] = (uint8_t)((data_len + 2) >> 8);
+    req[n++] = CALIPTRA_VDM_VERSION;
+    req[n++] = cmd;
+    memcpy(req + n, data, data_len);
+    n += data_len;
+
+    st = libspdm_send_receive_spdm_data(t->app.ctx, sid, req, n, rsp, &rsp_len);
+    if (LIBSPDM_STATUS_IS_ERROR(st)) {
+        node_style(node_add(res, "Error", "%s", spdm_status_str(st)), NS_ERR);
+        return -1;
+    }
+    if (rsp_len >= 4 && rsp[1] == SPDM_ERROR) {
+        node_style(node_add(res, "Error", "SPDM ERROR 0x%02x (data 0x%02x)", rsp[2], rsp[3]),
+                   NS_ERR);
+        return -1;
+    }
+    /* header(4) | standard_id(2) | vendor_id_len | vendor_id | rsp_len(2) | payload */
+    if (rsp_len < 7 || rsp[1] != SPDM_VENDOR_DEFINED_RESPONSE ||
+        rsp_len < 7u + rsp[6] + 2) {
+        node_style(node_add(res, "Error", "malformed VENDOR_DEFINED_RESPONSE (%zu bytes)",
+                            rsp_len), NS_ERR);
+        return -1;
+    }
+    p = rsp + 7 + rsp[6];
+    plen = (size_t)p[0] | (size_t)p[1] << 8;
+    p += 2;
+    if (rsp[4] != (CALIPTRA_VDM_STANDARD_IANA & 0xff) || rsp[5] != 0 || rsp[6] != 4 ||
+        get_le32(rsp + 7) != CALIPTRA_VDM_VENDOR_ID || (size_t)(p - rsp) + plen > rsp_len ||
+        plen < 3 || p[0] != CALIPTRA_VDM_VERSION || p[1] != cmd) {
+        node_style(node_add(res, "Error", "unexpected VDM response header"), NS_ERR);
+        node_add_hex(res, "Response", rsp, rsp_len < 64 ? rsp_len : 64);
+        return -1;
+    }
+    node_add(res, "VDM response", "%zu bytes (SPDM message %zu bytes)", plen, rsp_len);
+    if (p[2] != 0) {
+        node_style(node_add(res, "CompletionCode", "0x%02x %s", p[2], caliptra_cc_str(p[2])),
+                   NS_ERR);
+        return -1;
+    }
+    node_style(node_add(res, "CompletionCode", "0x00 Success"), NS_OK);
+    *out = p + 3;
+    *out_len = plen - 3;
+    return 0;
+}
+
+static bool contains(const uint8_t *hay, size_t hlen, const uint8_t *needle, size_t nlen)
+{
+    size_t i;
+
+    for (i = 0; i + nlen <= hlen; i++)
+        if (!memcmp(hay + i, needle, nlen))
+            return true;
+    return false;
+}
+
+static void vdm_step(struct tool *t, const uint32_t *sid, const char *id, const char *title,
+                     uint8_t cmd, const uint8_t *data, size_t data_len, const uint8_t *nonce,
+                     uint8_t *rsp)
+{
+    const uint8_t *out;
+    size_t out_len;
+    node_t *res;
+    char what[96];
+
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    if (caliptra_vdm(t, sid, res, cmd, data, data_len, rsp, &out, &out_len)) {
+        STEP_END(t, id, ST_FAIL, res, "no Caliptra VDM answer");
+        return;
+    }
+    /* query: evidence_format(0) | data_len(4) | format bitmap (bit n: format n) */
+    if (cmd == CALIPTRA_VDM_GET_ATTESTATION && get_le32(data) == 0) {
+        uint32_t bits;
+
+        if (out_len < 12 || get_le32(out + 4) != 4) {
+            STEP_END(t, id, ST_FAIL, res, "malformed format query response (%zu bytes)", out_len);
+            return;
+        }
+        bits = get_le32(out + 8);
+        node_add(res, "SupportedFormats", "0x%08x%s%s", bits, bits & 2 ? " OCP-EAT" : "",
+                 bits & 4 ? " PCR-quote" : "");
+        STEP_END(t, id, bits ? ST_OK : ST_WARN, res, "evidence formats 0x%08x", bits);
+        return;
+    }
+    if (out_len < (cmd == CALIPTRA_VDM_GET_ATTESTATION ? 8u : 4u)) {
+        STEP_END(t, id, ST_FAIL, res, "response too short (%zu bytes)", out_len);
+        return;
+    }
+    if (cmd == CALIPTRA_VDM_GET_ATTESTATION) {
+        node_add(res, "EvidenceFormat", "%u", get_le32(out));
+        out += 4;
+        out_len -= 4;
+    }
+    node_add(res, "DataLength", "%u", get_le32(out));
+    if (get_le32(out) != out_len - 4) {
+        STEP_END(t, id, ST_FAIL, res, "data length %u, but %zu bytes came", get_le32(out),
+                 out_len - 4);
+        return;
+    }
+    node_add_hex(res, "Data (first 32 bytes)", out + 4, out_len - 4 < 32 ? out_len - 4 : 32);
+    snprintf(what, sizeof(what), "%zu bytes", out_len - 4);
+    if (nonce) {
+        bool has = contains(out + 4, out_len - 4, nonce, 32);
+
+        node_style(node_add(res, "Nonce", has ? "found in the signed data" : "NOT found"),
+                   has ? NS_OK : NS_ERR);
+        STEP_END(t, id, has ? ST_OK : ST_FAIL, res, "%s%s", what,
+                 has ? ", bound to the requester nonce" : ", requester nonce missing");
+        return;
+    }
+    STEP_END(t, id, ST_OK, res, "%s", what);
+}
+
+/* Caliptra VDM commands (the MCU mailbox command set over SPDM) inside a
+ * secure session. */
+static int step_caliptra_vdm(struct tool *t)
+{
+    uint8_t req[44], nonce[32], meas_hash[LIBSPDM_MAX_HASH_SIZE], hb = 0, *rsp;
+    uint32_t sid = 0, caps;
+    libspdm_return_t st;
+    node_t *res;
+
+    if (ensure_connected(t))
+        return -1;
+    caps = peer_caps(t);
+    if (ensure_cert(t) && !t->have_cert)
+        return -1;
+    out_step_begin("vdm-session", "KEY_EXCHANGE / FINISH - secure session for Caliptra VDM");
+    res = node_new("", NULL);
+    if (!(caps & SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_EX_CAP) || t->sopts.no_session_caps) {
+        STEP_END(t, "vdm-session", ST_FAIL, res, "responder has no KEY_EX_CAP");
+        return -1;
+    }
+    st = libspdm_start_session(t->app.ctx, false, NULL, 0, 0, t->slot, 0, &sid, &hb, meas_hash);
+    if (LIBSPDM_STATUS_IS_ERROR(st)) {
+        STEP_END(t, "vdm-session", ST_FAIL, res, "session establishment failed: %s",
+                 spdm_status_str(st));
+        return -1;
+    }
+    node_style(node_add(res, "SessionID", "0x%08x", sid), NS_HILITE);
+    STEP_END(t, "vdm-session", t->chain_trusted ? ST_OK : ST_WARN, res,
+             "Secure session 0x%08x established%s", sid,
+             t->chain_trusted ? "" : " (responder identity not anchored in a trusted root)");
+
+    rsp = malloc(CALIPTRA_VDM_RSP_MAX);
+    if (!rsp)
+        return -1;
+
+    /* GET_ATTESTATION query: evidence_format 0 returns the supported formats */
+    memset(req, 0, sizeof(req));
+    put_le32(req + 4, 1);
+    vdm_step(t, &sid, "vdm-attest-query", "Caliptra VDM GET_ATTESTATION - supported formats (in secure session)",
+             CALIPTRA_VDM_GET_ATTESTATION, req, 44, NULL, rsp);
+
+    /* GET_ATTESTATION: OCP EAT, ECC P-384, vendor slot, fresh nonce */
+    put_le32(req, 1);
+    put_le32(req + 4, 1);
+    put_le32(req + 8, 0);
+    new_nonce(nonce);
+    memcpy(req + 12, nonce, 32);
+    vdm_step(t, &sid, "vdm-attest-eat",
+             "Caliptra VDM GET_ATTESTATION - OCP EAT, ECC P-384 (in secure session)",
+             CALIPTRA_VDM_GET_ATTESTATION, req, 44, nonce, rsp);
+
+    /* EXPORT_ATTESTED_CSR: device_key_id | algorithm (1: ECC P-384) | nonce */
+    put_le32(req, t->csr_key_id);
+    put_le32(req + 4, 1);
+    new_nonce(nonce);
+    memcpy(req + 8, nonce, 32);
+    vdm_step(t, &sid, "vdm-csr",
+             "Caliptra VDM EXPORT_ATTESTED_CSR - ECC P-384 (in secure session)",
+             CALIPTRA_VDM_EXPORT_ATTESTED_CSR, req, 40, nonce, rsp);
+    free(rsp);
+
+    out_step_begin("vdm-end-session", "END_SESSION - terminate secure session");
+    res = node_new("", NULL);
+    st = libspdm_stop_session(t->app.ctx, sid, 0);
+    STEP_END(t, "vdm-end-session", LIBSPDM_STATUS_IS_ERROR(st) ? ST_FAIL : ST_OK, res, "%s",
+             LIBSPDM_STATUS_IS_ERROR(st) ? spdm_status_str(st) : "session closed");
+    return 0;
+}
+
 /* ---------------------------------------------------------------- loop */
 
 static void on_signal(int sig)
@@ -725,6 +966,7 @@ static void usage(FILE *f)
 "  challenge     CHALLENGE / CHALLENGE_AUTH signature verification\n"
 "  meas          GET_MEASUREMENTS (signed when supported)\n"
 "  session       KEY_EXCHANGE+FINISH, HEARTBEAT, KEY_UPDATE, measurements, END_SESSION\n"
+"  caliptra-vdm  Caliptra VDM GET_ATTESTATION and EXPORT_ATTESTED_CSR in a secure session\n"
 "  all           connect digests cert challenge meas session\n"
 "\n"
 "Connection:\n"
@@ -750,6 +992,7 @@ static void usage(FILE *f)
 "      --meas-summary T     measurement summary hash for CHALLENGE/KEY_EXCHANGE:\n"
 "                           none, tcb, all (default all)\n"
 "      --no-session         do not advertise session capabilities\n"
+"      --csr-key-id N       device key id for caliptra-vdm EXPORT_ATTESTED_CSR (default 1)\n"
 "\n"
 "Certificates:\n"
 "  -r, --root-ca FILE       trusted root CA (PEM or DER), may be repeated; the chain\n"
@@ -812,7 +1055,7 @@ static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint
 
 enum {
     OPT_ASYM = 0x100, OPT_PQC_ASYM, OPT_HASH, OPT_DHE, OPT_KEM, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
-    OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL,
+    OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL, OPT_CSR_KEY_ID,
 };
 
 static const struct option long_opts[] = {
@@ -846,6 +1089,7 @@ static const struct option long_opts[] = {
     { "loop", required_argument, NULL, 'l' },
     { "count", required_argument, NULL, 'c' },
     { "loop-full", no_argument, NULL, OPT_LOOP_FULL },
+    { "csr-key-id", required_argument, NULL, OPT_CSR_KEY_ID },
     { 0 }
 };
 
@@ -867,6 +1111,8 @@ static int run_command(struct tool *t, const char *cmd)
         return step_meas(t);
     if (!strcmp(cmd, "session"))
         return step_session(t);
+    if (!strcmp(cmd, "caliptra-vdm"))
+        return step_caliptra_vdm(t);
     if (!strcmp(cmd, "all")) {
         /* Later loop rounds reuse the connection and certificate chain and
          * only repeat the nonce-based steps (unless --loop-full). */
@@ -888,7 +1134,8 @@ static int run_command(struct tool *t, const char *cmd)
 static bool valid_command(const char *c)
 {
     static const char *cmds[] = { "version", "connect", "digests", "cert", "get-root-ca",
-                                  "challenge", "meas", "session", "all" };
+                                  "challenge", "meas", "session", "caliptra-vdm",
+                                  "all" };
     size_t i;
 
     for (i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
@@ -909,6 +1156,7 @@ int main(int argc, char **argv)
     t.meas_index = -1;
     t.meas_sig = true;
     t.meas_summary = SPDM_CHALLENGE_REQUEST_ALL_MEASUREMENTS_HASH;
+    t.csr_key_id = 1;
 
     while ((opt = getopt_long(argc, argv, "e:n:i:L:t:V:s:m:r:R:C:l:c:vxjqh", long_opts, NULL)) != -1) {
         switch (opt) {
@@ -1009,6 +1257,7 @@ int main(int argc, char **argv)
             break;
         case 'c': t.loop_count = atoi(optarg); break;
         case OPT_LOOP_FULL: t.loop_full = true; break;
+        case OPT_CSR_KEY_ID: t.csr_key_id = (uint32_t)strtoul(optarg, NULL, 0); break;
         case 'C': t.save_chain = optarg; break;
         case 'v': verbose++; break;
         case 'x': hex = true; break;
