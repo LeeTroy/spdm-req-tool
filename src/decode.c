@@ -8,6 +8,7 @@
 
 #include "cbor.h"
 #include "decode.h"
+#include "eat.h"
 #include "output.h"
 #include "spdm_glue.h"
 #include "util.h"
@@ -634,6 +635,15 @@ void decode_meas_record(node_t *parent, const uint8_t *rec, size_t len, unsigned
                 node_add(dm, "OperationalModeState", "0x%08x", get_le32(v + 4));
                 node_add(dm, "DeviceModeCapabilities", "0x%08x", get_le32(v + 8));
                 node_add(dm, "DeviceModeState", "0x%08x", get_le32(v + 12));
+            } else if ((vt & 0x80) && eat_is_cose_sign1(v, vs)) {
+                /* OCP EAT; its eat_nonce is the GET_MEASUREMENTS nonce */
+                size_t rl;
+                const uint8_t *rq = decode_last_request(SPDM_GET_MEASUREMENTS, &rl);
+                bool signed_req = rq && rl >= 4 + 32 &&
+                    (rq[2] & SPDM_GET_MEASUREMENTS_REQUEST_ATTRIBUTES_GENERATE_SIGNATURE);
+
+                eat_describe(b, "Value", v, vs, signed_req ? rq + 4 : NULL, 32, NULL);
+                node_add_hex(b, "RawValue", v, vs);
             } else if ((vt & 0x80) && vs >= 2 && (v[0] >> 5) >= 4 &&
                        cbor_describe(b, "Value", v, vs)) {
                 /* CBOR manifest (e.g. signed EAT); keep the raw bytes as well */

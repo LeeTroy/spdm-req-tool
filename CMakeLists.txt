@@ -109,6 +109,7 @@ add_executable(spdm-req-tool
     src/output.c
     src/cert.c
     src/cbor.c
+    src/eat.c
     src/util.c
 )
 add_dependencies(spdm-req-tool libspdm_ext)

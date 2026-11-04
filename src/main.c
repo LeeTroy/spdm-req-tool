@@ -15,6 +15,7 @@
 
 #include "cert.h"
 #include "decode.h"
+#include "eat.h"
 #include "output.h"
 #include "spdm_glue.h"
 #include "util.h"
@@ -820,6 +821,8 @@ static void vdm_step(struct tool *t, const uint32_t *sid, const char *id, const 
     size_t out_len;
     node_t *res;
     char what[96];
+    enum eat_nonce eat_match = EAT_NONCE_NONE;
+    bool eat = false;
 
     out_step_begin(id, title);
     res = node_new("", NULL);
@@ -856,8 +859,20 @@ static void vdm_step(struct tool *t, const uint32_t *sid, const char *id, const 
                  out_len - 4);
         return;
     }
-    node_add_hex(res, "Data (first 32 bytes)", out + 4, out_len - 4 < 32 ? out_len - 4 : 32);
-    snprintf(what, sizeof(what), "%zu bytes", out_len - 4);
+    if (cmd == CALIPTRA_VDM_GET_ATTESTATION)
+        eat = eat_describe(res, "Evidence", out + 4, out_len - 4, nonce, nonce ? 32 : 0,
+                           &eat_match);
+    if (!eat)
+        node_add_hex(res, "Data (first 32 bytes)", out + 4, out_len - 4 < 32 ? out_len - 4 : 32);
+    snprintf(what, sizeof(what), "%zu bytes%s", out_len - 4, eat ? " OCP EAT" : "");
+    if (nonce && eat_match != EAT_NONCE_NONE) {
+        bool has = eat_match == EAT_NONCE_MATCH;
+
+        STEP_END(t, id, has ? ST_OK : ST_FAIL, res, "%s%s", what,
+                 has ? ", eat_nonce matches the requester nonce" :
+                       ", eat_nonce differs from the requester nonce");
+        return;
+    }
     if (nonce) {
         bool has = contains(out + 4, out_len - 4, nonce, 32);
 

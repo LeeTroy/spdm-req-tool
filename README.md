@@ -14,6 +14,7 @@ spdm-req-tool/
 │   ├── decode.c              human-readable decoder for every SPDM 1.0-1.4 message
 │   ├── cert.c                X.509 / SPDM cert chain parsing, PEM/DER, root CA
 │   ├── cbor.c                CBOR/COSE decoder (EAT measurement manifests)
+│   ├── eat.c                 OCP EAT decoder (COSE_Sign1, claims, concise evidence)
 │   └── output.c              colored text or JSON-lines output
 ├── demo/spdm-demo.py         curses TUI (Python stdlib only)
 ├── test/mctp_responder.c     libspdm test responder over AF_MCTP (sample keys!)
@@ -113,8 +114,8 @@ OCP command registry: SPDM VENDOR_DEFINED_REQUEST, standard id IANA, vendor
 id 0xA67F) inside it, then ends the session:
 
 - GET_ATTESTATION with evidence format 0: the supported-format bitmap
-- GET_ATTESTATION for an OCP EAT signed with ECC P-384, checking that the
-  requester nonce is in the signed data
+- GET_ATTESTATION for an OCP EAT signed with ECC P-384, decoded like an OCP
+  EAT measurement block; its `eat_nonce` claim must equal the requester nonce
 - EXPORT_ATTESTED_CSR (ECC P-384, `--csr-key-id`), with the same nonce check
 
 A responder that does not serve Caliptra VDM answers with SPDM ERROR
@@ -156,6 +157,25 @@ spdm-req-tool -e 33 -t 10000 -V 1.3 intel-mbx
 spdm-req-tool -e 33 -t 10000 -V 1.3 --mbx-read 0x60,0x01 --mbx-write 0x60=01 \
     --mbx-negative intel-mbx
 ```
+
+### OCP EAT measurements
+
+A COSE_Sign1 EAT (in a measurement block, or the Caliptra GET_ATTESTATION
+evidence) is shown with named fields:
+
+- COSE headers: `alg` (ES384, ML-DSA-87, ...) and `kid`; the signature bytes
+- claims (RFC 9711): `eat_nonce`, `ueid`, `dbgstat` (WARN when debug is
+  enabled), `eat_profile` (`1.3.6.1.4.1.42623.1.3` is the OCP profile), `swname`,
+  `measurements`, ...
+- `measurements` entries with content format 10571: the TCG concise evidence
+  (tag 571), as evidence triples of an environment (class id, vendor, model,
+  layer, index) and its measurements (key, version, SVN, digests by algorithm,
+  flags, raw value, name, integrity registers)
+
+For a signed GET_MEASUREMENTS the `eat_nonce` claim is compared with the
+request nonce (`eat_nonce check`). Unknown claims and keys fall back to the
+generic CBOR view. The COSE signature itself is not verified (the SPDM
+signature over the measurements is).
 
 ### Loop mode (fresh nonces every round)
 
@@ -219,8 +239,8 @@ Summary: 9 passed, 0 warning, 0 failed
 `-v` prints every message as a decoded tree: header and description,
 capabilities flag by flag, algorithm sets by name, digests, certificate
 portions, chunking (`LargeResponse` / `CHUNK_GET`), CHALLENGE_AUTH fields,
-measurement blocks (DMTF value types, device mode, SVN, CBOR/COSE/EAT
-manifests decoded), KEY_EXCHANGE/FINISH, opaque data (secured message
+measurement blocks (DMTF value types, device mode, SVN, CBOR/COSE
+manifests; an OCP EAT is decoded field by field, see below), KEY_EXCHANGE/FINISH, opaque data (secured message
 versions) and ERROR codes. Messages inside a secure session are shown
 decrypted and tagged `[secured session 0x...]`. Add `-x` for raw hex.
 
@@ -492,62 +512,46 @@ spdm-req-tool 1.0.0 | libspdm | AF_MCTP EID 44 net any
           MeasurementSize: 406
           ValueType: 0x8a: Structured measurement manifest, raw bit stream
           ValueSize: 403
-          Value: CBOR, 403 bytes
-            item: tag 55799 (self-described CBOR)
-              content: tag 61 (CWT)
-                content: tag 18 (COSE_Sign1)
-                  content: array(4)
-                    [0]: bstr(4), embedded CBOR
-                      item: map(1)
-                        1: -35 (ES384)
-                    [1]: map(1)
-                      4: 
-                        add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
-                        c500a66cc29d118e27e7b84f130de62e
-                    [2]: bstr(239), embedded CBOR
-                      item: map(4)
-                        10: 190b85ac83969f4fcea9fbbda8d7dc751d6eb1d9ffbd59dc63fc34493e1dc455
-                        263 (dbgstat): 0
-                        265 (eat_profile): tag 111 (OID)
-                          oid: 1.3.6.1.4.1.42623.1.3
-                          note: non-standard: OID tag holds ASCII text, not DER
-                        273 (measurements): array(1)
-                          [0]: array(2)
-                            [0]: 10571
-                            [1]: bstr(162), embedded CBOR
-                              item: tag 571 (TCG concise evidence)
-                                content: map(1)
-                                  0: map(1)
-                                    0: array(1)
-                                      [0]: array(2)
-                                        [0]: map(1)
-                                          0: map(3)
-                                            0: tag 560 (tagged-bytes)
-                                              content: bstr(10) "0x0000100E"
-                                            1: "ASPEED"
-                                            2: "AST1080"
-                                        [1]: array(1)
-                                          [0]: map(2)
-                                            0: 1
-                                            1: map(3)
-                                              1: 0
-                                              2: array(1)
-                                                [0]: array(2)
-                                                  [0]: 7
-                                                  [1]: 
-                                                    105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
-                                                    4775b63144fea644119b29697b35dd68
-                                              14: map(1)
-                                                0: array(1)
-                                                  [0]: array(2)
-                                                    [0]: 7
-                                                    [1]: 
-                                                      05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
-                                                      031939ec808fad03b84f3f04c2d67779
-                    [3]: 
-                      50dc817bf0f051863bf64db7186e6c94afb9030c024bb8f0b2c357f5214efabb
-                      ad83bc4baec499e135cd0689ea8d6da6ab1a8069ea4ff786704ed2abf8b25039
-                      71a5dca158ca7d42b2531f7b431c57db8fa3e39eb72d12cedebfc04d9cd506bf
+          Value: OCP EAT, COSE_Sign1, 403 bytes
+            Protected
+              alg: -35 (ES384)
+            Unprotected
+              kid: 
+                add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
+                c500a66cc29d118e27e7b84f130de62e
+            Claims: 4
+              eat_nonce: 190b85ac83969f4fcea9fbbda8d7dc751d6eb1d9ffbd59dc63fc34493e1dc455
+              eat_nonce check: matches the requester nonce
+              dbgstat: 0 (enabled)
+              eat_profile: 1.3.6.1.4.1.42623.1.3 (OCP EAT profile)
+              eat_profile note: non-standard: OID tag holds ASCII text, not DER
+              measurements: 1
+                [0]
+                  ContentFormat: 10571 (application/ce+cbor, TCG concise evidence)
+                  ConciseEvidence: 162 bytes
+                    EvidenceTriples: 1
+                      [0]
+                        Environment
+                          ClassID: "0x0000100E"
+                          Vendor: "ASPEED"
+                          Model: "AST1080"
+                        Measurements: 1
+                          [0]
+                            Key: 1
+                            SVN: 0
+                            Digests: 1 digest
+                              SHA-384: 
+                                105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
+                                4775b63144fea644119b29697b35dd68
+                            IntegrityRegisters: 1 register
+                              Register 0: 1 digest
+                                SHA-384: 
+                                  05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
+                                  031939ec808fad03b84f3f04c2d67779
+            Signature: 
+              50dc817bf0f051863bf64db7186e6c94afb9030c024bb8f0b2c357f5214efabb
+              ad83bc4baec499e135cd0689ea8d6da6ab1a8069ea4ff786704ed2abf8b25039
+              71a5dca158ca7d42b2531f7b431c57db8fa3e39eb72d12cedebfc04d9cd506bf
           RawValue: 
             d9d9f7d83dd28444a1013822a1045830add2c76396a3e741f75d6d8b870d4e09
             132677dbfec437f00a82ba80a979524bc500a66cc29d118e27e7b84f130de62e
@@ -587,62 +591,45 @@ spdm-req-tool 1.0.0 | libspdm | AF_MCTP EID 44 net any
           MeasurementSize: 406
           ValueType: 0x8a: Structured measurement manifest, raw bit stream
           ValueSize: 403
-          Value: CBOR, 403 bytes
-            item: tag 55799 (self-described CBOR)
-              content: tag 61 (CWT)
-                content: tag 18 (COSE_Sign1)
-                  content: array(4)
-                    [0]: bstr(4), embedded CBOR
-                      item: map(1)
-                        1: -35 (ES384)
-                    [1]: map(1)
-                      4: 
-                        add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
-                        c500a66cc29d118e27e7b84f130de62e
-                    [2]: bstr(239), embedded CBOR
-                      item: map(4)
-                        10: 0000000000000000000000000000000000000000000000000000000000000000
-                        263 (dbgstat): 0
-                        265 (eat_profile): tag 111 (OID)
-                          oid: 1.3.6.1.4.1.42623.1.3
-                          note: non-standard: OID tag holds ASCII text, not DER
-                        273 (measurements): array(1)
-                          [0]: array(2)
-                            [0]: 10571
-                            [1]: bstr(162), embedded CBOR
-                              item: tag 571 (TCG concise evidence)
-                                content: map(1)
-                                  0: map(1)
-                                    0: array(1)
-                                      [0]: array(2)
-                                        [0]: map(1)
-                                          0: map(3)
-                                            0: tag 560 (tagged-bytes)
-                                              content: bstr(10) "0x0000100E"
-                                            1: "ASPEED"
-                                            2: "AST1080"
-                                        [1]: array(1)
-                                          [0]: map(2)
-                                            0: 1
-                                            1: map(3)
-                                              1: 0
-                                              2: array(1)
-                                                [0]: array(2)
-                                                  [0]: 7
-                                                  [1]: 
-                                                    105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
-                                                    4775b63144fea644119b29697b35dd68
-                                              14: map(1)
-                                                0: array(1)
-                                                  [0]: array(2)
-                                                    [0]: 7
-                                                    [1]: 
-                                                      05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
-                                                      031939ec808fad03b84f3f04c2d67779
-                    [3]: 
-                      f45366de74d2e5523a7713e1e620a588ef36a928083ccf24edfb0447efd4b9e5
-                      91f17ad075ca07121de244f1fe9412bad92d02039bb72546ed815ac0e9f0c66e
-                      b0d6900906da865fd8de03b8470061afa2a459109b429733849b38d1b2180ec2
+          Value: OCP EAT, COSE_Sign1, 403 bytes
+            Protected
+              alg: -35 (ES384)
+            Unprotected
+              kid: 
+                add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
+                c500a66cc29d118e27e7b84f130de62e
+            Claims: 4
+              eat_nonce: 0000000000000000000000000000000000000000000000000000000000000000
+              dbgstat: 0 (enabled)
+              eat_profile: 1.3.6.1.4.1.42623.1.3 (OCP EAT profile)
+              eat_profile note: non-standard: OID tag holds ASCII text, not DER
+              measurements: 1
+                [0]
+                  ContentFormat: 10571 (application/ce+cbor, TCG concise evidence)
+                  ConciseEvidence: 162 bytes
+                    EvidenceTriples: 1
+                      [0]
+                        Environment
+                          ClassID: "0x0000100E"
+                          Vendor: "ASPEED"
+                          Model: "AST1080"
+                        Measurements: 1
+                          [0]
+                            Key: 1
+                            SVN: 0
+                            Digests: 1 digest
+                              SHA-384: 
+                                105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
+                                4775b63144fea644119b29697b35dd68
+                            IntegrityRegisters: 1 register
+                              Register 0: 1 digest
+                                SHA-384: 
+                                  05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
+                                  031939ec808fad03b84f3f04c2d67779
+            Signature: 
+              f45366de74d2e5523a7713e1e620a588ef36a928083ccf24edfb0447efd4b9e5
+              91f17ad075ca07121de244f1fe9412bad92d02039bb72546ed815ac0e9f0c66e
+              b0d6900906da865fd8de03b8470061afa2a459109b429733849b38d1b2180ec2
           RawValue: 
             d9d9f7d83dd28444a1013822a1045830add2c76396a3e741f75d6d8b870d4e09
             132677dbfec437f00a82ba80a979524bc500a66cc29d118e27e7b84f130de62e
@@ -769,62 +756,45 @@ $ /tmp/spdm-req-tool -e 44 -r /tmp/ca-cert.pem -v session
               MeasurementSize: 406
               ValueType: 0x8a: Structured measurement manifest, raw bit stream
               ValueSize: 403
-              Value: CBOR, 403 bytes
-                item: tag 55799 (self-described CBOR)
-                  content: tag 61 (CWT)
-                    content: tag 18 (COSE_Sign1)
-                      content: array(4)
-                        [0]: bstr(4), embedded CBOR
-                          item: map(1)
-                            1: -35 (ES384)
-                        [1]: map(1)
-                          4: 
-                            add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
-                            c500a66cc29d118e27e7b84f130de62e
-                        [2]: bstr(239), embedded CBOR
-                          item: map(4)
-                            10: 0000000000000000000000000000000000000000000000000000000000000000
-                            263 (dbgstat): 0
-                            265 (eat_profile): tag 111 (OID)
-                              oid: 1.3.6.1.4.1.42623.1.3
-                              note: non-standard: OID tag holds ASCII text, not DER
-                            273 (measurements): array(1)
-                              [0]: array(2)
-                                [0]: 10571
-                                [1]: bstr(162), embedded CBOR
-                                  item: tag 571 (TCG concise evidence)
-                                    content: map(1)
-                                      0: map(1)
-                                        0: array(1)
-                                          [0]: array(2)
-                                            [0]: map(1)
-                                              0: map(3)
-                                                0: tag 560 (tagged-bytes)
-                                                  content: bstr(10) "0x0000100E"
-                                                1: "ASPEED"
-                                                2: "AST1080"
-                                            [1]: array(1)
-                                              [0]: map(2)
-                                                0: 1
-                                                1: map(3)
-                                                  1: 0
-                                                  2: array(1)
-                                                    [0]: array(2)
-                                                      [0]: 7
-                                                      [1]: 
-                                                        105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
-                                                        4775b63144fea644119b29697b35dd68
-                                                  14: map(1)
-                                                    0: array(1)
-                                                      [0]: array(2)
-                                                        [0]: 7
-                                                        [1]: 
-                                                          05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
-                                                          031939ec808fad03b84f3f04c2d67779
-                        [3]: 
-                          f45366de74d2e5523a7713e1e620a588ef36a928083ccf24edfb0447efd4b9e5
-                          91f17ad075ca07121de244f1fe9412bad92d02039bb72546ed815ac0e9f0c66e
-                          b0d6900906da865fd8de03b8470061afa2a459109b429733849b38d1b2180ec2
+              Value: OCP EAT, COSE_Sign1, 403 bytes
+                Protected
+                  alg: -35 (ES384)
+                Unprotected
+                  kid: 
+                    add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
+                    c500a66cc29d118e27e7b84f130de62e
+                Claims: 4
+                  eat_nonce: 0000000000000000000000000000000000000000000000000000000000000000
+                  dbgstat: 0 (enabled)
+                  eat_profile: 1.3.6.1.4.1.42623.1.3 (OCP EAT profile)
+                  eat_profile note: non-standard: OID tag holds ASCII text, not DER
+                  measurements: 1
+                    [0]
+                      ContentFormat: 10571 (application/ce+cbor, TCG concise evidence)
+                      ConciseEvidence: 162 bytes
+                        EvidenceTriples: 1
+                          [0]
+                            Environment
+                              ClassID: "0x0000100E"
+                              Vendor: "ASPEED"
+                              Model: "AST1080"
+                            Measurements: 1
+                              [0]
+                                Key: 1
+                                SVN: 0
+                                Digests: 1 digest
+                                  SHA-384: 
+                                    105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
+                                    4775b63144fea644119b29697b35dd68
+                                IntegrityRegisters: 1 register
+                                  Register 0: 1 digest
+                                    SHA-384: 
+                                      05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
+                                      031939ec808fad03b84f3f04c2d67779
+                Signature: 
+                  f45366de74d2e5523a7713e1e620a588ef36a928083ccf24edfb0447efd4b9e5
+                  91f17ad075ca07121de244f1fe9412bad92d02039bb72546ed815ac0e9f0c66e
+                  b0d6900906da865fd8de03b8470061afa2a459109b429733849b38d1b2180ec2
               RawValue: 
                 d9d9f7d83dd28444a1013822a1045830add2c76396a3e741f75d6d8b870d4e09
                 132677dbfec437f00a82ba80a979524bc500a66cc29d118e27e7b84f130de62e
@@ -867,62 +837,45 @@ $ /tmp/spdm-req-tool -e 44 -r /tmp/ca-cert.pem -v session
           MeasurementSize: 406
           ValueType: 0x8a: Structured measurement manifest, raw bit stream
           ValueSize: 403
-          Value: CBOR, 403 bytes
-            item: tag 55799 (self-described CBOR)
-              content: tag 61 (CWT)
-                content: tag 18 (COSE_Sign1)
-                  content: array(4)
-                    [0]: bstr(4), embedded CBOR
-                      item: map(1)
-                        1: -35 (ES384)
-                    [1]: map(1)
-                      4: 
-                        add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
-                        c500a66cc29d118e27e7b84f130de62e
-                    [2]: bstr(239), embedded CBOR
-                      item: map(4)
-                        10: 0000000000000000000000000000000000000000000000000000000000000000
-                        263 (dbgstat): 0
-                        265 (eat_profile): tag 111 (OID)
-                          oid: 1.3.6.1.4.1.42623.1.3
-                          note: non-standard: OID tag holds ASCII text, not DER
-                        273 (measurements): array(1)
-                          [0]: array(2)
-                            [0]: 10571
-                            [1]: bstr(162), embedded CBOR
-                              item: tag 571 (TCG concise evidence)
-                                content: map(1)
-                                  0: map(1)
-                                    0: array(1)
-                                      [0]: array(2)
-                                        [0]: map(1)
-                                          0: map(3)
-                                            0: tag 560 (tagged-bytes)
-                                              content: bstr(10) "0x0000100E"
-                                            1: "ASPEED"
-                                            2: "AST1080"
-                                        [1]: array(1)
-                                          [0]: map(2)
-                                            0: 1
-                                            1: map(3)
-                                              1: 0
-                                              2: array(1)
-                                                [0]: array(2)
-                                                  [0]: 7
-                                                  [1]: 
-                                                    105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
-                                                    4775b63144fea644119b29697b35dd68
-                                              14: map(1)
-                                                0: array(1)
-                                                  [0]: array(2)
-                                                    [0]: 7
-                                                    [1]: 
-                                                      05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
-                                                      031939ec808fad03b84f3f04c2d67779
-                    [3]: 
-                      f45366de74d2e5523a7713e1e620a588ef36a928083ccf24edfb0447efd4b9e5
-                      91f17ad075ca07121de244f1fe9412bad92d02039bb72546ed815ac0e9f0c66e
-                      b0d6900906da865fd8de03b8470061afa2a459109b429733849b38d1b2180ec2
+          Value: OCP EAT, COSE_Sign1, 403 bytes
+            Protected
+              alg: -35 (ES384)
+            Unprotected
+              kid: 
+                add2c76396a3e741f75d6d8b870d4e09132677dbfec437f00a82ba80a979524b
+                c500a66cc29d118e27e7b84f130de62e
+            Claims: 4
+              eat_nonce: 0000000000000000000000000000000000000000000000000000000000000000
+              dbgstat: 0 (enabled)
+              eat_profile: 1.3.6.1.4.1.42623.1.3 (OCP EAT profile)
+              eat_profile note: non-standard: OID tag holds ASCII text, not DER
+              measurements: 1
+                [0]
+                  ContentFormat: 10571 (application/ce+cbor, TCG concise evidence)
+                  ConciseEvidence: 162 bytes
+                    EvidenceTriples: 1
+                      [0]
+                        Environment
+                          ClassID: "0x0000100E"
+                          Vendor: "ASPEED"
+                          Model: "AST1080"
+                        Measurements: 1
+                          [0]
+                            Key: 1
+                            SVN: 0
+                            Digests: 1 digest
+                              SHA-384: 
+                                105c51d8f67c4bee5f3c97d9d90c34707f7893128ae3d39071ddc7713cca43a5
+                                4775b63144fea644119b29697b35dd68
+                            IntegrityRegisters: 1 register
+                              Register 0: 1 digest
+                                SHA-384: 
+                                  05ad8278d0016fc81755f6aabda587036c68874a3b992f6a27a6d075ae7880f0
+                                  031939ec808fad03b84f3f04c2d67779
+            Signature: 
+              f45366de74d2e5523a7713e1e620a588ef36a928083ccf24edfb0447efd4b9e5
+              91f17ad075ca07121de244f1fe9412bad92d02039bb72546ed815ac0e9f0c66e
+              b0d6900906da865fd8de03b8470061afa2a459109b429733849b38d1b2180ec2
           RawValue: 
             d9d9f7d83dd28444a1013822a1045830add2c76396a3e741f75d6d8b870d4e09
             132677dbfec437f00a82ba80a979524bc500a66cc29d118e27e7b84f130de62e

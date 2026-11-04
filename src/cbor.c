@@ -292,9 +292,6 @@ static void render(cb_t *c, node_t *parent, const char *key, int depth)
             uint8_t m2, a2;
             uint64_t l2;
             char dotted[128];
-            size_t off = 0, j;
-            uint64_t acc = 0;
-            bool first = true;
 
             head(c, &m2, &a2, &l2);
             if (l2 && l2 <= (uint64_t)(c->end - c->p) && is_text(c->p, l2) &&
@@ -306,22 +303,7 @@ static void render(cb_t *c, node_t *parent, const char *key, int depth)
                 c->p += l2;
                 return;
             }
-            for (j = 0; j < l2 && off + 24 < sizeof(dotted); j++) {
-                acc = (acc << 7) | (c->p[j] & 0x7f);
-                if (c->p[j] & 0x80)
-                    continue;
-                if (first) {
-                    uint64_t a = acc < 80 ? acc / 40 : 2;
-
-                    off += snprintf(dotted + off, sizeof(dotted) - off, "%llu.%llu",
-                                    (unsigned long long)a, (unsigned long long)(acc - a * 40));
-                    first = false;
-                } else {
-                    off += snprintf(dotted + off, sizeof(dotted) - off, ".%llu",
-                                    (unsigned long long)acc);
-                }
-                acc = 0;
-            }
+            cbor_oid_str(c->p, l2, dotted, sizeof(dotted));
             c->p += l2;
             node_add(n, "oid", "%s", dotted);
             return;
@@ -341,6 +323,114 @@ static void render(cb_t *c, node_t *parent, const char *key, int depth)
         }
         node_add(parent, key, "simple(%llu)", (unsigned long long)v);
         return;
+    }
+}
+
+/* ------------------------------------------------------------- cursor */
+
+int cbor_peek(const cbor_t *c)
+{
+    return c->p < c->end ? *c->p >> 5 : -1;
+}
+
+bool cbor_skip(cbor_t *c)
+{
+    cb_t b = { c->p, c->end };
+
+    if (!skip(&b, 0))
+        return false;
+    c->p = b.p;
+    return true;
+}
+
+/* Consumes the head of a definite-length item of major type mt. */
+static bool take(cbor_t *c, int mt, uint64_t *v)
+{
+    cb_t b = { c->p, c->end };
+    uint8_t m, ai;
+
+    if (cbor_peek(c) != mt || !head(&b, &m, &ai, v) || ai == 31)
+        return false;
+    c->p = b.p;
+    return true;
+}
+
+bool cbor_int(cbor_t *c, int64_t *v)
+{
+    uint64_t u;
+
+    if (take(c, CBOR_UINT, &u) && u <= INT64_MAX) {
+        *v = (int64_t)u;
+        return true;
+    }
+    if (take(c, CBOR_NINT, &u) && u <= INT64_MAX) {
+        *v = -1 - (int64_t)u;
+        return true;
+    }
+    return false;
+}
+
+bool cbor_str(cbor_t *c, int mt, const uint8_t **p, size_t *len)
+{
+    const uint8_t *save = c->p;
+    uint64_t v;
+
+    if (!take(c, mt, &v))
+        return false;
+    if (v > (uint64_t)(c->end - c->p)) {
+        c->p = save;
+        return false;
+    }
+    *p = c->p;
+    *len = (size_t)v;
+    c->p += v;
+    return true;
+}
+
+bool cbor_array(cbor_t *c, uint64_t *count)
+{
+    return take(c, CBOR_ARRAY, count);
+}
+
+bool cbor_map(cbor_t *c, uint64_t *count)
+{
+    return take(c, CBOR_MAP, count);
+}
+
+bool cbor_tag(cbor_t *c, uint64_t *tag)
+{
+    return take(c, CBOR_TAG, tag);
+}
+
+void cbor_render(cbor_t *c, node_t *parent, const char *key)
+{
+    cb_t b = { c->p, c->end };
+
+    render(&b, parent, key, 0);
+    c->p = b.p;
+}
+
+void cbor_oid_str(const uint8_t *p, size_t len, char *buf, size_t size)
+{
+    size_t off = 0, j;
+    uint64_t acc = 0;
+    bool first = true;
+
+    buf[0] = 0;
+    for (j = 0; j < len && off + 24 < size; j++) {
+        acc = (acc << 7) | (p[j] & 0x7f);
+        if (p[j] & 0x80)
+            continue;
+        if (first) {
+            uint64_t a = acc < 80 ? acc / 40 : 2;
+
+            off += snprintf(buf + off, size - off, "%llu.%llu", (unsigned long long)a,
+                            (unsigned long long)(acc - a * 40));
+            first = false;
+        } else {
+            off += snprintf(buf + off, size - off, ".%llu", (unsigned long long)acc);
+        }
+        acc = 0;
     }
 }
 
