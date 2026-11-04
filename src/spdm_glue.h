@@ -39,6 +39,8 @@ typedef struct {
     size_t buf_size;
     bool sender_busy;
     bool receiver_busy;
+    bool quiet_timeout;      /* a receive timeout is expected: do not log it */
+    bool rx_timeout;         /* the last receive timed out */
     /* trust anchors kept alive for libspdm (it stores pointers) */
     uint8_t *root_ca[10];
     size_t root_ca_len[10];

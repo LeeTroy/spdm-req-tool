@@ -274,7 +274,9 @@ void out_msg(bool tx, const uint32_t *session_id, const char *name, uint8_t vers
         json_begin("msg");
         printf(",\"dir\":\"%s\",\"name\":", tx ? "req" : "rsp");
         json_str(stdout, name);
-        printf(",\"ver\":\"%u.%u\",\"len\":%zu", version >> 4, version & 0xf, raw_len);
+        if (version)
+            printf(",\"ver\":\"%u.%u\"", version >> 4, version & 0xf);
+        printf(",\"len\":%zu", raw_len);
         if (session_id)
             printf(",\"session\":\"0x%08x\"", *session_id);
         fputs(",\"hex\":", stdout);
@@ -288,10 +290,13 @@ void out_msg(bool tx, const uint32_t *session_id, const char *name, uint8_t vers
     if (!g_out.verbose && !g_out.hex)
         return;
 
-    printf("    %s%s%s %s%-28s%s %sv%u.%u %4zu bytes%s",
-           c(tx ? C_YELLOW C_BOLD : C_GREEN C_BOLD), tx ? "-->" : "<--", c(C_RESET),
-           c(C_BOLD), name, c(C_RESET), c(C_DIM), version >> 4, version & 0xf, raw_len,
-           c(C_RESET));
+    printf("    %s%s%s %s%-28s%s %s", c(tx ? C_YELLOW C_BOLD : C_GREEN C_BOLD),
+           tx ? "-->" : "<--", c(C_RESET), c(C_BOLD), name, c(C_RESET), c(C_DIM));
+    if (version)
+        printf("v%u.%u ", version >> 4, version & 0xf);
+    else
+        printf("app  ");
+    printf("%4zu bytes%s", raw_len, c(C_RESET));
     if (session_id)
         printf("  %s[secured session 0x%08x]%s", c(C_MAGENTA), *session_id, c(C_RESET));
     putchar('\n');

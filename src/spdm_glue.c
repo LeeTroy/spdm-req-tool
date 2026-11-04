@@ -83,9 +83,11 @@ static libspdm_return_t dev_recv(void *ctx, size_t *size, void **msg, uint64_t t
     if (*size < 2)
         return LIBSPDM_STATUS_RECEIVE_FAIL;
     rc = mctp_recv(&g_app->mctp, &type, buf + 1, *size - 1, &len, tmo);
+    g_app->rx_timeout = rc == -ETIMEDOUT;
     if (rc) {
-        out_log(ST_FAIL, "MCTP receive from EID %u failed: %s", g_app->mctp.eid,
-                rc == -ETIMEDOUT ? "timeout" : strerror(-rc));
+        if (!(g_app->rx_timeout && g_app->quiet_timeout))
+            out_log(ST_FAIL, "MCTP receive from EID %u failed: %s", g_app->mctp.eid,
+                    rc == -ETIMEDOUT ? "timeout" : strerror(-rc));
         return LIBSPDM_STATUS_RECEIVE_FAIL;
     }
     out_transport(false, type, g_app->mctp.eid, len);
@@ -132,6 +134,8 @@ static libspdm_return_t tap_encode(void *ctx, const uint32_t *session_id, bool i
 {
     if (!is_app_message)
         decode_and_report(ctx, true, session_id, message, message_size);
+    else
+        decode_app_and_report(true, session_id, message, message_size);
     return libspdm_transport_mctp_encode_message(ctx, session_id, is_app_message,
                                                  is_request_message, message_size, message,
                                                  transport_message_size, transport_message);
@@ -150,6 +154,8 @@ static libspdm_return_t tap_decode(void *ctx, uint32_t **session_id, bool *is_ap
         out_log(ST_FAIL, "MCTP transport decode failed: %s", spdm_status_str(st));
     else if (!*is_app_message)
         decode_and_report(ctx, false, *session_id, *message, *message_size);
+    else
+        decode_app_and_report(false, *session_id, *message, *message_size);
     return st;
 }
 

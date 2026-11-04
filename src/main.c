@@ -36,6 +36,13 @@ struct tool {
     const char *save_root_ca;
     const char *save_chain;
     uint32_t csr_key_id;        /* caliptra-vdm EXPORT_ATTESTED_CSR */
+    struct { uint8_t addr, len; } mbx_reads[16]; /* intel-mbx DATA_READs */
+    int mbx_read_count;
+    int mbx_write_addr;         /* intel-mbx DATA_WRITE address, -1: none */
+    uint8_t mbx_write_data[48];
+    uint8_t mbx_write_len;
+    bool mbx_negative;
+    uint32_t mbx_seq;
 
     /* state */
     bool connected;
@@ -932,6 +939,366 @@ static int step_caliptra_vdm(struct tool *t)
     return 0;
 }
 
+/* ----------------------------------------------------------- intel-mbx */
+
+/* Intel PFR mailbox (DOE) messages: MCTP vendor-defined PCI (0x7E), PCI VID
+ * 0x8086 (big-endian), Cerberus INTEL_MESSAGE (0x0a); the payload is
+ * seq_num(4) | command | status | address | length | data, zero-padded to a
+ * multiple of 8. In a secure session they travel as application data, which
+ * libspdm's MCTP transport encrypts as is, so byte 0 is the MCTP type. */
+#define MCTP_TYPE_VDM_PCI 0x7E
+#define INTEL_PCI_VID 0x8086
+#define INTEL_MESSAGE_OP_CODE 0x0a
+#define INTEL_MBX_DATA_WRITE 1
+#define INTEL_MBX_DATA_READ 2
+#define INTEL_MBX_DISCOVERY 3
+#define INTEL_MBX_HDR 13
+#define INTEL_MBX_RSP_MAX 1024
+#define INTEL_MBX_BMC_CHECKPOINT 0x60
+
+enum mbx_result { MBX_OK, MBX_SPDM_ERROR, MBX_TIMEOUT, MBX_FAIL };
+
+static size_t mbx_build(struct tool *t, uint8_t *req, uint16_t vid, uint8_t cmd, uint8_t addr,
+                        uint8_t len, const uint8_t *data, size_t data_len)
+{
+    size_t n = 0;
+
+    req[n++] = MCTP_TYPE_VDM_PCI;
+    req[n++] = vid >> 8;
+    req[n++] = vid & 0xff;
+    req[n++] = 0;
+    req[n++] = INTEL_MESSAGE_OP_CODE;
+    put_le32(req + n, ++t->mbx_seq);
+    n += 4;
+    req[n++] = cmd;
+    req[n++] = 0;
+    req[n++] = addr;
+    req[n++] = len;
+    memcpy(req + n, data, data_len);
+    n += data_len;
+    while ((n - 5) % 8)
+        req[n++] = 0;
+    return n;
+}
+
+/* Sends one message in session sid, or as a plain MCTP message when sid is
+ * NULL, and returns the reply in rsp / *rsp_len (an SPDM ERROR for
+ * MBX_SPDM_ERROR). */
+static enum mbx_result mbx_exchange(struct tool *t, const uint32_t *sid, node_t *res,
+                                    const uint8_t *req, size_t n, uint8_t *rsp, size_t *rsp_len,
+                                    bool expect_timeout)
+{
+    enum mbx_result r = MBX_OK;
+    libspdm_return_t st;
+    const uint8_t *err;
+    size_t elen;
+    uint8_t type;
+    int rc;
+
+    t->app.quiet_timeout = expect_timeout;
+    t->app.rx_timeout = false;
+    if (sid) {
+        decode_forget_response(SPDM_ERROR);
+        st = libspdm_send_receive_data(t->app.ctx, sid, true, req, n, rsp, rsp_len);
+        if (!LIBSPDM_STATUS_IS_ERROR(st))
+            goto out;
+        /* libspdm drops an SPDM message that answers application data, but
+         * the transport tap has seen it decrypted. */
+        err = decode_last_response(SPDM_ERROR, &elen);
+        if (err && elen >= 4) {
+            node_add(res, "Response", "SPDM ERROR 0x%02x %s (data 0x%02x), encrypted", err[2],
+                     spdm_error_name(err[2]), err[3]);
+            memcpy(rsp, err, elen < *rsp_len ? elen : *rsp_len);
+            *rsp_len = elen < *rsp_len ? elen : *rsp_len;
+            r = MBX_SPDM_ERROR;
+        } else if (t->app.rx_timeout) {
+            node_add(res, "Response", "none (timeout)");
+            r = MBX_TIMEOUT;
+        } else {
+            node_style(node_add(res, "Error", "%s", spdm_status_str(st)), NS_ERR);
+            r = MBX_FAIL;
+        }
+        goto out;
+    }
+    decode_app_and_report(true, NULL, req, n);
+    rc = mctp_send(&t->app.mctp, req[0], req + 1, n - 1);
+    out_transport(true, req[0], t->app.mctp.eid, n - 1);
+    if (rc) {
+        node_style(node_add(res, "Error", "MCTP send failed: %s", strerror(-rc)), NS_ERR);
+        r = MBX_FAIL;
+        goto out;
+    }
+    rc = mctp_recv(&t->app.mctp, &type, rsp + 1, *rsp_len - 1, rsp_len, t->sopts.timeout_ms);
+    if (rc == -ETIMEDOUT) {
+        node_add(res, "Response", "none (timeout)");
+        r = MBX_TIMEOUT;
+        goto out;
+    }
+    if (rc) {
+        node_style(node_add(res, "Error", "MCTP receive failed: %s", strerror(-rc)), NS_ERR);
+        r = MBX_FAIL;
+        goto out;
+    }
+    out_transport(false, type, t->app.mctp.eid, *rsp_len);
+    rsp[0] = type;
+    *rsp_len += 1;
+    decode_app_and_report(false, NULL, rsp, *rsp_len);
+out:
+    t->app.quiet_timeout = false;
+    return r;
+}
+
+/* Checks a mailbox reply against its request. Returns the payload status
+ * (0: OK) with the data in *data / *dlen, or -1 for a malformed reply. */
+static int mbx_parse(node_t *res, const uint8_t *req, const uint8_t *rsp, size_t len,
+                     const uint8_t **data, size_t *dlen)
+{
+    if (len < INTEL_MBX_HDR || rsp[0] != MCTP_TYPE_VDM_PCI || rsp[1] != req[1] ||
+        rsp[2] != req[2] || rsp[4] != INTEL_MESSAGE_OP_CODE || rsp[9] != req[9] ||
+        rsp[12] > len - INTEL_MBX_HDR) {
+        node_style(node_add(res, "Error", "malformed mailbox reply (%zu bytes)", len), NS_ERR);
+        node_add_hex(res, "Reply", rsp, len < 64 ? len : 64);
+        return -1;
+    }
+    if (get_le32(rsp + 5) != get_le32(req + 5)) {
+        node_style(node_add(res, "SeqNum", "%u, request had %u", get_le32(rsp + 5),
+                            get_le32(req + 5)), NS_ERR);
+        return -1;
+    }
+    if (rsp[10]) {
+        node_style(node_add(res, "Status", "0x%02x%s", rsp[10], rsp[10] == 0xff ? " (fail)" : ""),
+                   NS_ERR);
+        return rsp[10];
+    }
+    node_style(node_add(res, "Status", "0x00 OK"), NS_OK);
+    *data = rsp + INTEL_MBX_HDR;
+    *dlen = rsp[12];
+    return 0;
+}
+
+static const char *mbx_where(const uint32_t *sid)
+{
+    return sid ? "in secure session" : "in the clear";
+}
+
+static void mbx_fail_summary(struct tool *t, const char *id, node_t *res, enum mbx_result r,
+                             const uint8_t *rsp)
+{
+    if (r == MBX_SPDM_ERROR)
+        STEP_END(t, id, ST_FAIL, res, "SPDM ERROR %s (0x%02x)", spdm_error_name(rsp[2]), rsp[2]);
+    else if (r == MBX_TIMEOUT)
+        STEP_END(t, id, ST_FAIL, res, "no reply (timeout)");
+    else
+        STEP_END(t, id, ST_FAIL, res, "no mailbox reply");
+}
+
+/* DATA_READ of len bytes at addr. The value goes to val / *vlen (up to 48
+ * bytes); with cmp it is compared with that earlier value. Returns 0 when a
+ * value was read. */
+static int mbx_read_step(struct tool *t, const uint32_t *sid, const char *id, uint8_t addr,
+                         uint8_t len, const uint8_t *cmp, size_t cmp_len, uint8_t *val,
+                         size_t *vlen)
+{
+    uint8_t req[INTEL_MBX_HDR + 8], rsp[INTEL_MBX_RSP_MAX];
+    size_t n, rsp_len = sizeof(rsp), dlen;
+    const uint8_t *data;
+    enum out_status status = ST_OK;
+    enum mbx_result r;
+    char title[96], *h;
+    node_t *res;
+    int s;
+
+    snprintf(title, sizeof(title), "Intel PFR mailbox DATA_READ 0x%02x, %u byte%s (%s)", addr,
+             len, len == 1 ? "" : "s", mbx_where(sid));
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    n = mbx_build(t, req, INTEL_PCI_VID, INTEL_MBX_DATA_READ, addr, len, NULL, 0);
+    r = mbx_exchange(t, sid, res, req, n, rsp, &rsp_len, false);
+    if (r != MBX_OK) {
+        mbx_fail_summary(t, id, res, r, rsp);
+        return -1;
+    }
+    s = mbx_parse(res, req, rsp, rsp_len, &data, &dlen);
+    if (s) {
+        if (s < 0)
+            STEP_END(t, id, ST_FAIL, res, "malformed mailbox reply");
+        else
+            STEP_END(t, id, ST_FAIL, res, "mailbox status 0x%02x", s);
+        return -1;
+    }
+    node_style(node_add_hex(res, "Value", data, dlen), NS_HILITE);
+    if (dlen != len) {
+        node_style(node_add(res, "Length", "%zu bytes, %u requested", dlen, len), NS_WARN);
+        status = ST_WARN;
+    }
+    if (cmp) {
+        bool same = cmp_len == dlen && !memcmp(cmp, data, dlen);
+
+        node_style(node_add(res, "InTheClear", same ? "same value" : "DIFFERENT value"),
+                   same ? NS_OK : NS_WARN);
+        if (!same) {
+            node_add_hex(res, "ClearValue", cmp, cmp_len);
+            status = ST_WARN;
+        }
+    }
+    h = hex_string(data, dlen);
+    STEP_END(t, id, status, res, "0x%02x = %s%s%s", addr, h ? h : "?",
+             !cmp ? "" : status == ST_OK ? ", same as in the clear" : ", differs from the clear",
+             dlen != len ? " (short)" : "");
+    free(h);
+    if (val) {
+        memcpy(val, data, dlen);
+        *vlen = dlen;
+    }
+    return 0;
+}
+
+static void mbx_write_step(struct tool *t, const uint32_t *sid)
+{
+    uint8_t req[INTEL_MBX_HDR + 64], rsp[INTEL_MBX_RSP_MAX], addr = t->mbx_write_addr;
+    size_t n, rsp_len = sizeof(rsp), dlen;
+    const uint8_t *data;
+    enum mbx_result r;
+    char id[32], title[96], *h;
+    node_t *res;
+    int s;
+
+    snprintf(id, sizeof(id), "mbx-write-0x%02x", addr);
+    snprintf(title, sizeof(title), "Intel PFR mailbox DATA_WRITE 0x%02x (%s)", addr,
+             mbx_where(sid));
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    node_add_hex(res, "Written", t->mbx_write_data, t->mbx_write_len);
+    n = mbx_build(t, req, INTEL_PCI_VID, INTEL_MBX_DATA_WRITE, addr, t->mbx_write_len,
+                  t->mbx_write_data, t->mbx_write_len);
+    r = mbx_exchange(t, sid, res, req, n, rsp, &rsp_len, false);
+    if (r != MBX_OK) {
+        mbx_fail_summary(t, id, res, r, rsp);
+        return;
+    }
+    s = mbx_parse(res, req, rsp, rsp_len, &data, &dlen);
+    h = hex_string(t->mbx_write_data, t->mbx_write_len);
+    if (s < 0)
+        STEP_END(t, id, ST_FAIL, res, "malformed mailbox reply");
+    else if (s)
+        STEP_END(t, id, ST_FAIL, res, "mailbox status 0x%02x", s);
+    else
+        STEP_END(t, id, ST_OK, res, "wrote %s to 0x%02x", h ? h : "?", addr);
+    free(h);
+    if (s)
+        return;
+    snprintf(id, sizeof(id), "mbx-readback-0x%02x", addr);
+    mbx_read_step(t, sid, id, addr, t->mbx_write_len, NULL, 0, NULL, NULL);
+}
+
+/* A message the responder must not hand to the mailbox. want_error: an
+ * encrypted SPDM ERROR with that code is expected; 0: no reply at all. */
+static void mbx_negative_step(struct tool *t, const uint32_t *sid, const char *id,
+                              const char *title, const uint8_t *req, size_t n, uint8_t want_error)
+{
+    uint8_t rsp[INTEL_MBX_RSP_MAX];
+    size_t rsp_len = sizeof(rsp);
+    enum mbx_result r;
+    node_t *res;
+
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    r = mbx_exchange(t, sid, res, req, n, rsp, &rsp_len, !want_error);
+    if (want_error && r == MBX_SPDM_ERROR && rsp[2] == want_error)
+        STEP_END(t, id, ST_OK, res, "SPDM ERROR %s, as expected", spdm_error_name(rsp[2]));
+    else if (want_error && r == MBX_SPDM_ERROR)
+        STEP_END(t, id, ST_FAIL, res, "SPDM ERROR %s (0x%02x), expected %s",
+                 spdm_error_name(rsp[2]), rsp[2], spdm_error_name(want_error));
+    else if (!want_error && r == MBX_TIMEOUT)
+        STEP_END(t, id, ST_OK, res, "no reply, as expected");
+    else if (r == MBX_OK)
+        STEP_END(t, id, ST_FAIL, res, "the responder answered (%zu bytes), expected %s",
+                 rsp_len, want_error ? "an SPDM ERROR" : "no reply");
+    else
+        STEP_END(t, id, ST_FAIL, res, "%s, expected %s",
+                 r == MBX_TIMEOUT ? "no reply" : r == MBX_SPDM_ERROR ? "SPDM ERROR" : "failure",
+                 want_error ? spdm_error_name(want_error) : "no reply");
+}
+
+/* Intel PFR mailbox reads in the clear, then the same reads (plus an optional
+ * write and negative cases) inside a secure session. */
+static int step_intel_mbx(struct tool *t)
+{
+    static const uint8_t pldm_get_tid[] = { 0x01, 0x80, 0x00, 0x02 };
+    uint8_t clear[16][48], hb = 0, meas_hash[LIBSPDM_MAX_HASH_SIZE], req[INTEL_MBX_HDR + 8];
+    size_t clear_len[16];
+    bool have_clear[16];
+    uint32_t sid = 0, caps;
+    libspdm_return_t st;
+    node_t *res;
+    char id[32];
+    size_t n;
+    int i;
+
+    for (i = 0; i < t->mbx_read_count; i++) {
+        snprintf(id, sizeof(id), "mbx-clear-0x%02x", t->mbx_reads[i].addr);
+        have_clear[i] = !mbx_read_step(t, NULL, id, t->mbx_reads[i].addr, t->mbx_reads[i].len,
+                                       NULL, 0, clear[i], &clear_len[i]);
+    }
+
+    if (ensure_connected(t))
+        return -1;
+    caps = peer_caps(t);
+    if ((caps & SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_EX_CAP) && !t->sopts.no_session_caps &&
+        ensure_cert(t) && !t->have_cert)
+        return -1;
+    out_step_begin("mbx-session", "KEY_EXCHANGE / FINISH - secure session for the PFR mailbox");
+    res = node_new("", NULL);
+    if (!(caps & SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_EX_CAP) || t->sopts.no_session_caps) {
+        STEP_END(t, "mbx-session", ST_FAIL, res, "responder has no KEY_EX_CAP");
+        return -1;
+    }
+    st = libspdm_start_session(t->app.ctx, false, NULL, 0, 0, t->slot, 0, &sid, &hb, meas_hash);
+    if (LIBSPDM_STATUS_IS_ERROR(st)) {
+        STEP_END(t, "mbx-session", ST_FAIL, res, "session establishment failed: %s",
+                 spdm_status_str(st));
+        return -1;
+    }
+    node_style(node_add(res, "SessionID", "0x%08x", sid), NS_HILITE);
+    STEP_END(t, "mbx-session", t->chain_trusted ? ST_OK : ST_WARN, res,
+             "Secure session 0x%08x established%s", sid,
+             t->chain_trusted ? "" : " (responder identity not anchored in a trusted root)");
+
+    for (i = 0; i < t->mbx_read_count; i++) {
+        snprintf(id, sizeof(id), "mbx-read-0x%02x", t->mbx_reads[i].addr);
+        mbx_read_step(t, &sid, id, t->mbx_reads[i].addr, t->mbx_reads[i].len,
+                      have_clear[i] ? clear[i] : NULL, have_clear[i] ? clear_len[i] : 0, NULL,
+                      NULL);
+    }
+
+    if (t->mbx_write_addr >= 0)
+        mbx_write_step(t, &sid);
+
+    if (t->mbx_negative) {
+        uint8_t addr = t->mbx_reads[0].addr, len = t->mbx_reads[0].len;
+
+        n = mbx_build(t, req, 0x1414, INTEL_MBX_DATA_READ, addr, len, NULL, 0);
+        mbx_negative_step(t, &sid, "mbx-neg-vid",
+                          "MCTP 0x7E with VID 0x1414 - not Intel (in secure session)", req, n,
+                          SPDM_ERROR_CODE_INVALID_REQUEST);
+        n = mbx_build(t, req, INTEL_PCI_VID, INTEL_MBX_DISCOVERY, 0, 0, NULL, 0);
+        mbx_negative_step(t, &sid, "mbx-neg-discovery",
+                          "Intel mailbox DISCOVERY - not served (in secure session)", req, n, 0);
+        mbx_read_step(t, &sid, "mbx-neg-after", addr, len, have_clear[0] ? clear[0] : NULL,
+                      have_clear[0] ? clear_len[0] : 0, NULL, NULL);
+        mbx_negative_step(t, &sid, "mbx-neg-pldm",
+                          "PLDM GetTID as application data (in secure session)", pldm_get_tid,
+                          sizeof(pldm_get_tid), SPDM_ERROR_CODE_INVALID_REQUEST);
+    }
+
+    out_step_begin("mbx-end-session", "END_SESSION - terminate secure session");
+    res = node_new("", NULL);
+    st = libspdm_stop_session(t->app.ctx, sid, 0);
+    STEP_END(t, "mbx-end-session", LIBSPDM_STATUS_IS_ERROR(st) ? ST_FAIL : ST_OK, res, "%s",
+             LIBSPDM_STATUS_IS_ERROR(st) ? spdm_status_str(st) : "session closed");
+    return 0;
+}
+
 /* ---------------------------------------------------------------- loop */
 
 static void on_signal(int sig)
@@ -967,6 +1334,7 @@ static void usage(FILE *f)
 "  meas          GET_MEASUREMENTS (signed when supported)\n"
 "  session       KEY_EXCHANGE+FINISH, HEARTBEAT, KEY_UPDATE, measurements, END_SESSION\n"
 "  caliptra-vdm  Caliptra VDM GET_ATTESTATION and EXPORT_ATTESTED_CSR in a secure session\n"
+"  intel-mbx     Intel PFR mailbox reads in the clear and in a secure session\n"
 "  all           connect digests cert challenge meas session\n"
 "\n"
 "Connection:\n"
@@ -993,6 +1361,10 @@ static void usage(FILE *f)
 "                           none, tcb, all (default all)\n"
 "      --no-session         do not advertise session capabilities\n"
 "      --csr-key-id N       device key id for caliptra-vdm EXPORT_ATTESTED_CSR (default 1)\n"
+"      --mbx-read LIST      intel-mbx registers to read, ADDR[:LEN],... (default 0x60,0x00)\n"
+"      --mbx-write A=HEX    intel-mbx: also write HEX bytes to register A in the session,\n"
+"                           then read it back (0x09 and 0x80 to 0x60 are refused)\n"
+"      --mbx-negative       intel-mbx: also send messages the responder must refuse\n"
 "\n"
 "Certificates:\n"
 "  -r, --root-ca FILE       trusted root CA (PEM or DER), may be repeated; the chain\n"
@@ -1053,9 +1425,76 @@ static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint
     return mask ? 0 : -1;
 }
 
+/* --mbx-read ADDR[:LEN],... */
+static int parse_mbx_reads(struct tool *t, const char *list)
+{
+    char *dup = strdup(list), *save = NULL, *tok;
+    int rc = 0;
+
+    t->mbx_read_count = 0;
+    for (tok = strtok_r(dup, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        char *end;
+        unsigned long a = strtoul(tok, &end, 0), l = 1;
+
+        if (*end == ':')
+            l = strtoul(end + 1, &end, 0);
+        if (*end || a > 0xff || l < 1 || l > 48 || t->mbx_read_count >= 16) {
+            fprintf(stderr, "invalid --mbx-read entry '%s' (ADDR[:LEN], LEN 1..48, at most 16)\n",
+                    tok);
+            rc = -1;
+            break;
+        }
+        t->mbx_reads[t->mbx_read_count].addr = (uint8_t)a;
+        t->mbx_reads[t->mbx_read_count++].len = (uint8_t)l;
+    }
+    free(dup);
+    if (!rc && !t->mbx_read_count) {
+        fprintf(stderr, "empty --mbx-read list\n");
+        rc = -1;
+    }
+    return rc;
+}
+
+/* --mbx-write ADDR=HEX */
+static int parse_mbx_write(struct tool *t, const char *arg)
+{
+    const char *h;
+    char *end;
+    unsigned long a = strtoul(arg, &end, 0);
+    size_t n = 0;
+
+    if (*end != '=' || a > 0xff)
+        goto bad;
+    for (h = end + 1; *h; h += 2) {
+        unsigned v;
+
+        if (n >= sizeof(t->mbx_write_data) || sscanf(h, "%2x", &v) != 1 || !h[1])
+            goto bad;
+        t->mbx_write_data[n++] = (uint8_t)v;
+    }
+    if (!n)
+        goto bad;
+    /* Writing boot-done to the BMC checkpoint re-runs the PFR boot-complete
+     * path (and re-initializes I3C). */
+    if (a <= INTEL_MBX_BMC_CHECKPOINT && a + n > INTEL_MBX_BMC_CHECKPOINT &&
+        (t->mbx_write_data[INTEL_MBX_BMC_CHECKPOINT - a] == 0x09 ||
+         t->mbx_write_data[INTEL_MBX_BMC_CHECKPOINT - a] == 0x80)) {
+        fprintf(stderr, "--mbx-write: refusing to write 0x%02x to the BMC checkpoint 0x60\n",
+                t->mbx_write_data[INTEL_MBX_BMC_CHECKPOINT - a]);
+        return -1;
+    }
+    t->mbx_write_addr = (int)a;
+    t->mbx_write_len = (uint8_t)n;
+    return 0;
+bad:
+    fprintf(stderr, "invalid --mbx-write '%s' (ADDR=HEX, e.g. 0x60=01, 1..48 bytes)\n", arg);
+    return -1;
+}
+
 enum {
     OPT_ASYM = 0x100, OPT_PQC_ASYM, OPT_HASH, OPT_DHE, OPT_KEM, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
-    OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL, OPT_CSR_KEY_ID,
+    OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL, OPT_CSR_KEY_ID, OPT_MBX_READ,
+    OPT_MBX_WRITE, OPT_MBX_NEGATIVE,
 };
 
 static const struct option long_opts[] = {
@@ -1090,6 +1529,9 @@ static const struct option long_opts[] = {
     { "count", required_argument, NULL, 'c' },
     { "loop-full", no_argument, NULL, OPT_LOOP_FULL },
     { "csr-key-id", required_argument, NULL, OPT_CSR_KEY_ID },
+    { "mbx-read", required_argument, NULL, OPT_MBX_READ },
+    { "mbx-write", required_argument, NULL, OPT_MBX_WRITE },
+    { "mbx-negative", no_argument, NULL, OPT_MBX_NEGATIVE },
     { 0 }
 };
 
@@ -1113,6 +1555,8 @@ static int run_command(struct tool *t, const char *cmd)
         return step_session(t);
     if (!strcmp(cmd, "caliptra-vdm"))
         return step_caliptra_vdm(t);
+    if (!strcmp(cmd, "intel-mbx"))
+        return step_intel_mbx(t);
     if (!strcmp(cmd, "all")) {
         /* Later loop rounds reuse the connection and certificate chain and
          * only repeat the nonce-based steps (unless --loop-full). */
@@ -1135,7 +1579,7 @@ static bool valid_command(const char *c)
 {
     static const char *cmds[] = { "version", "connect", "digests", "cert", "get-root-ca",
                                   "challenge", "meas", "session", "caliptra-vdm",
-                                  "all" };
+                                  "intel-mbx", "all" };
     size_t i;
 
     for (i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
@@ -1157,6 +1601,7 @@ int main(int argc, char **argv)
     t.meas_sig = true;
     t.meas_summary = SPDM_CHALLENGE_REQUEST_ALL_MEASUREMENTS_HASH;
     t.csr_key_id = 1;
+    t.mbx_write_addr = -1;
 
     while ((opt = getopt_long(argc, argv, "e:n:i:L:t:V:s:m:r:R:C:l:c:vxjqh", long_opts, NULL)) != -1) {
         switch (opt) {
@@ -1258,6 +1703,15 @@ int main(int argc, char **argv)
         case 'c': t.loop_count = atoi(optarg); break;
         case OPT_LOOP_FULL: t.loop_full = true; break;
         case OPT_CSR_KEY_ID: t.csr_key_id = (uint32_t)strtoul(optarg, NULL, 0); break;
+        case OPT_MBX_READ:
+            if (parse_mbx_reads(&t, optarg))
+                return 2;
+            break;
+        case OPT_MBX_WRITE:
+            if (parse_mbx_write(&t, optarg))
+                return 2;
+            break;
+        case OPT_MBX_NEGATIVE: t.mbx_negative = true; break;
         case 'C': t.save_chain = optarg; break;
         case 'v': verbose++; break;
         case 'x': hex = true; break;
@@ -1275,6 +1729,8 @@ int main(int argc, char **argv)
         default: usage(stderr); return 2;
         }
     }
+    if (!t.mbx_read_count)
+        parse_mbx_reads(&t, "0x60,0x00");
     if (!have_eid || optind >= argc) {
         usage(stderr);
         return 2;

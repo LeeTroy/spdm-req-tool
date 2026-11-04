@@ -12,8 +12,16 @@
 void decode_and_report(void *ctx, bool tx, const uint32_t *session_id, const void *msg,
                        size_t len);
 
+/* Reports an application message (an MCTP message carried in a session, or
+ * sent in the clear next to SPDM): byte 0 is its MCTP message type. */
+void decode_app_and_report(bool tx, const uint32_t *session_id, const void *msg, size_t len);
+
+/* Decodes an Intel PFR mailbox message (MCTP 0x7E, VID 0x8086) into a tree. */
+node_t *intel_mbx_decode(const uint8_t *m, size_t len);
+
 /* Last plaintext response received with the given response code (or NULL). */
 const uint8_t *decode_last_response(uint8_t code, size_t *len);
+void decode_forget_response(uint8_t code);
 const uint8_t *decode_last_request(uint8_t code, size_t *len);
 
 /* Decodes one SPDM message into a tree. */

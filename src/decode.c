@@ -1250,10 +1250,100 @@ const uint8_t *decode_last_response(uint8_t code, size_t *len)
     return g_last[code].data;
 }
 
+void decode_forget_response(uint8_t code)
+{
+    free(g_last[code].data);
+    g_last[code].data = NULL;
+    g_last[code].len = 0;
+}
+
 const uint8_t *decode_last_request(uint8_t code, size_t *len)
 {
     *len = g_last_req[code].len;
     return g_last_req[code].data;
+}
+
+/* Intel PFR mailbox over MCTP vendor-defined PCI (Cerberus INTEL_MESSAGE):
+ * 0x7E | VID (BE) | instance/d/rq | 0x0a | seq_num(4) | command | status |
+ * address | length | data, the payload after byte 4 zero-padded to 8 bytes. */
+static const char *intel_mbx_cmd_name(uint8_t cmd)
+{
+    switch (cmd) {
+    case 1: return "DATA_WRITE";
+    case 2: return "DATA_READ";
+    case 3: return "DISCOVERY";
+    default: return NULL;
+    }
+}
+
+static bool is_intel_mbx(const uint8_t *m, size_t len)
+{
+    return len >= 5 && m[0] == 0x7E && m[1] == 0x80 && m[2] == 0x86 && m[4] == 0x0a;
+}
+
+node_t *intel_mbx_decode(const uint8_t *m, size_t len)
+{
+    node_t *root = node_new("", NULL);
+    const char *name;
+    size_t avail;
+
+    if (len < 5) {
+        node_add_hex(root, "Data", m, len);
+        return root;
+    }
+    node_add(root, "MessageType", "0x%02x (vendor-defined PCI)", m[0]);
+    node_add(root, "VendorID", "0x%02x%02x%s", m[1], m[2],
+             m[1] == 0x80 && m[2] == 0x86 ? " (Intel)" : "");
+    node_add(root, "Header", "0x%02x (instance %u, d %u, rq %u)", m[3], m[3] >> 3,
+             m[3] >> 1 & 1, m[3] & 1);
+    node_add(root, "Command", "0x%02x%s", m[4], m[4] == 0x0a ? " (INTEL_MESSAGE)" : "");
+    if (len < 13) {
+        node_add_hex(root, "Payload", m + 5, len - 5);
+        return root;
+    }
+    name = intel_mbx_cmd_name(m[9]);
+    node_add(root, "SeqNum", "%u", get_le32(m + 5));
+    node_add(root, "MailboxCommand", "%u%s%s%s", m[9], name ? " (" : "", name ? name : "",
+             name ? ")" : "");
+    node_add(root, "Status", "0x%02x%s", m[10],
+             m[10] == 0 ? " (OK)" : m[10] == 0xff ? " (fail)" : "");
+    node_add(root, "Address", "0x%02x", m[11]);
+    node_add(root, "Length", "%u", m[12]);
+    avail = len - 13;
+    if (avail && m[12])
+        node_add_hex(root, "Data", m + 13, avail < m[12] ? avail : m[12]);
+    if (avail > m[12])
+        node_add(root, "Padding", "%zu bytes", avail - m[12]);
+    return root;
+}
+
+void decode_app_and_report(bool tx, const uint32_t *session_id, const void *msg, size_t len)
+{
+    const uint8_t *m = msg;
+    node_t *tree;
+    char name[64];
+
+    if (is_intel_mbx(m, len)) {
+        const char *cmd = len >= 13 ? intel_mbx_cmd_name(m[9]) : NULL;
+
+        tree = intel_mbx_decode(m, len);
+        if (cmd)
+            snprintf(name, sizeof(name), "INTEL_MBX %s", cmd);
+        else if (len >= 13)
+            snprintf(name, sizeof(name), "INTEL_MBX cmd %u", m[9]);
+        else
+            snprintf(name, sizeof(name), "INTEL_MBX");
+    } else {
+        tree = node_new("", NULL);
+        if (len) {
+            node_add(tree, "MessageType", "0x%02x", m[0]);
+            node_add_hex(tree, "Data", m + 1, len - 1);
+        }
+        snprintf(name, sizeof(name), "APP(MCTP 0x%02x)", len ? m[0] : 0);
+    }
+    /* version 0: not an SPDM message */
+    out_msg(tx, session_id, name, 0, msg, len, tree->child);
+    node_free(tree);
 }
 
 void decode_and_report(void *ctx, bool tx, const uint32_t *session_id, const void *msg,

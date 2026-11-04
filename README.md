@@ -54,7 +54,7 @@ BMC=root@10.0.0.120 BMC_PASS=0penBmc scripts/deploy.sh
 spdm-req-tool -e EID [options] COMMAND [COMMAND...]
 
   version | connect | digests | cert | get-root-ca | challenge | meas | session |
-  caliptra-vdm | all
+  caliptra-vdm | intel-mbx | all
 ```
 
 Prerequisites run automatically (e.g. `challenge` performs VCA, GET_DIGESTS and
@@ -83,6 +83,9 @@ GET_CERTIFICATE first). Exit status is 0 when no step failed.
 | `-q` | quiet: one line per step (and per loop round), no details; errors still go to stderr |
 | `-l SEC`, `-c N`, `--loop-full` | loop mode (see below) |
 | `--csr-key-id N` | device key id for `caliptra-vdm` EXPORT_ATTESTED_CSR (default 1) |
+| `--mbx-read LIST` | `intel-mbx` registers to read, `ADDR[:LEN],...` (default `0x60,0x00`) |
+| `--mbx-write A=HEX` | `intel-mbx`: also write HEX to register A in the session and read it back |
+| `--mbx-negative` | `intel-mbx`: also send messages the responder must refuse |
 
 ### Root CA (certificate chain verification)
 
@@ -119,6 +122,39 @@ UnsupportedRequest (0x07), and the steps fail.
 
 ```
 spdm-req-tool -e 42 -r /tmp/ast1080-root.pem caliptra-vdm
+```
+
+### Intel PFR mailbox in a secure session
+
+`intel-mbx` sends Intel PFR mailbox (DOE) messages: MCTP type 0x7E
+(vendor-defined PCI), VID 0x8086, Cerberus INTEL_MESSAGE (0x0a), with the
+payload `seq_num(4) | command | status | address | length | data` zero-padded
+to a multiple of 8. Only DATA_WRITE (1) and DATA_READ (2) are used.
+
+1. Each `--mbx-read` register is read as a plain MCTP 0x7E message
+   (`mbx-clear-<addr>`).
+2. A secure session is set up (`mbx-session`), and the same reads are sent as
+   application data in it (`mbx-read-<addr>`). libspdm's MCTP transport
+   encrypts application data as is, so the decrypted data starts with 0x7E.
+   Each value is compared with the one read in the clear (WARN if it differs).
+3. `--mbx-write A=HEX` writes in the session (`mbx-write-<addr>`, status 0
+   expected) and reads the register back (`mbx-readback-<addr>`). Writing 0x09
+   or 0x80 to the BMC checkpoint 0x60 is refused: it re-runs the PFR
+   boot-complete path.
+4. `--mbx-negative` sends, in the session: 0x7E with VID 0x1414
+   (`mbx-neg-vid`, expects an encrypted SPDM ERROR InvalidRequest), Intel
+   DISCOVERY (`mbx-neg-discovery`, expects no reply), a read that must still
+   work afterwards (`mbx-neg-after`), and a PLDM GetTID (`mbx-neg-pldm`,
+   expects SPDM ERROR InvalidRequest).
+5. END_SESSION (`mbx-end-session`).
+
+With `-v` the mailbox messages are decoded (`INTEL_MBX DATA_READ`, ...).
+DISCOVERY waits for the full `-t` timeout.
+
+```
+spdm-req-tool -e 33 -t 10000 -V 1.3 intel-mbx
+spdm-req-tool -e 33 -t 10000 -V 1.3 --mbx-read 0x60,0x01 --mbx-write 0x60=01 \
+    --mbx-negative intel-mbx
 ```
 
 ### Loop mode (fresh nonces every round)
