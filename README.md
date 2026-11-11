@@ -19,7 +19,9 @@ spdm-req-tool/
 ├── demo/spdm-demo.py         curses TUI (Python stdlib only)
 ├── test/mctp_responder.c     libspdm test responder over AF_MCTP (sample keys!)
 ├── cmake/aarch64-linux-gnu.cmake
-└── scripts/deploy.sh
+└── scripts/
+    ├── deploy.sh
+    └── make-owner-pki.py     test owner PKI for set-cert (OpenSSL 3.5)
 ```
 
 ## Build
@@ -191,6 +193,20 @@ SET_CERTIFICATE, then END_SESSION.
   tests exit with 0.
 * After a write or erase, later `digests`, `cert` and `challenge` in the same
   run fetch the slots again.
+
+`scripts/make-owner-pki.py` makes a test owner PKI from the responder's slot-0
+chain (saved with `-C chain.bin` or `.pem`). It creates an owner root (ECC
+P-384 and/or ML-DSA-87) and re-signs the LDevID certificate with it, keeping
+its subject, public key and SubjectKeyIdentifier, so the alias certificates
+the responder appends still chain to it. It writes
+`owner-{ecc,mldsa}-chain.der` (root + endorsement, for `--cert-chain`) and
+`owner-{ecc,mldsa}-root.der` (for `-r`). It needs OpenSSL 3.5 for ML-DSA.
+
+```sh
+spdm-req-tool -e 32 -V 1.3 --asym ecdsa-p384 -C ecc.bin cert
+spdm-req-tool -e 32 -V 1.4 --pqc-asym ml-dsa-87 -C mldsa.bin cert
+scripts/make-owner-pki.py --ecc-chain ecc.bin --mldsa-chain mldsa.bin -o owner/
+```
 
 `key-pair-info` sends GET_KEY_PAIR_INFO (SPDM 1.3) for `--key-pair-id`, or
 for every key pair (1 to TotalKeyPairs), and shows the capabilities, key usage,
