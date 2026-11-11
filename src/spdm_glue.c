@@ -255,7 +255,10 @@ int spdm_app_init(spdm_app_t *app, const struct spdm_opts *o)
     /* KEMAlg is only sent in SPDM 1.4; the Responder selects DHE or KEM, not both */
     SET_LOCAL(LIBSPDM_DATA_KEM_ALG, o->kem);
     SET_LOCAL(LIBSPDM_DATA_KEY_SCHEDULE, (uint16_t)SPDM_ALGORITHMS_KEY_SCHEDULE_SPDM);
-    SET_LOCAL(LIBSPDM_DATA_OTHER_PARAMS_SUPPORT, (uint8_t)SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1);
+    /* MULTI_KEY_CONN: accept a multi-key connection when the responder
+     * leaves it to the requester (MULTI_KEY_CAP_NEG). */
+    SET_LOCAL(LIBSPDM_DATA_OTHER_PARAMS_SUPPORT,
+              (uint8_t)(SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1 | SPDM_ALGORITHMS_MULTI_KEY_CONN));
     SET_LOCAL(LIBSPDM_DATA_MEL_SPEC, (uint8_t)SPDM_MEL_SPECIFICATION_DMTF);
 
     if (!libspdm_check_context(app->ctx)) {

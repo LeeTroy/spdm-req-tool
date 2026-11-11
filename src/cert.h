@@ -16,7 +16,8 @@ struct cert_list {
     size_t len[CERT_LIST_MAX];
 };
 
-/* Loads one or more certificates from a PEM (possibly multi-cert) or DER file. */
+/* Loads one or more certificates from a PEM (possibly multi-cert) or DER
+ * (possibly concatenated) file. */
 int cert_load_file(const char *path, struct cert_list *out);
 void cert_list_free(struct cert_list *l);
 
@@ -30,6 +31,9 @@ int cert_save_pem_bundle(const char *path, const struct cert_list *l);
 bool cert_chain_get(const uint8_t *chain, size_t len, uint32_t hash_size, int index,
                     const uint8_t **der, size_t *der_len);
 int cert_chain_count(const uint8_t *chain, size_t len, uint32_t hash_size);
+/* Builds an SPDM cert chain from l (root first): Length, Reserved, the hash
+ * of the first certificate with hash_algo, then the certificates. */
+int cert_chain_build(const struct cert_list *l, uint32_t hash_algo, uint8_t **chain, size_t *len);
 
 /* Adds a human-readable description of a DER certificate. */
 node_t *cert_describe(node_t *parent, const char *key, const uint8_t *der, size_t len);

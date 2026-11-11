@@ -55,7 +55,7 @@ BMC=root@10.0.0.120 BMC_PASS=0penBmc scripts/deploy.sh
 spdm-req-tool -e EID [options] COMMAND [COMMAND...]
 
   version | connect | digests | cert | get-root-ca | challenge | meas | session |
-  caliptra-vdm | intel-mbx | all
+  caliptra-vdm | intel-mbx | set-cert | erase-cert | key-pair-info | all
 ```
 
 Prerequisites run automatically (e.g. `challenge` performs VCA, GET_DIGESTS and
@@ -87,6 +87,12 @@ GET_CERTIFICATE first). Exit status is 0 when no step failed.
 | `--mbx-read LIST` | `intel-mbx` registers to read, `ADDR[:LEN],...` (default `0x60,0x00`) |
 | `--mbx-write A=HEX` | `intel-mbx`: also write HEX to register A in the session and read it back |
 | `--mbx-negative` | `intel-mbx`: also send messages the responder must refuse |
+| `--cert-chain FILE` | `set-cert`: certificates to write, root first (PEM bundle or concatenated DER) |
+| `--cert-model M` | `set-cert` SetCertModel: `none`, `device`, `alias` (default), `generic` |
+| `--key-pair-id N` | `set-cert`/`erase-cert` KeyPairID (default 1 on a multi-key connection, else 0); `key-pair-info`: only key pair N |
+| `--session-slot N` | slot whose key authenticates the `set-cert`/`erase-cert` session (default 0) |
+| `--set-cert-no-session` | send SET_CERTIFICATE in the clear (negative test) |
+| `--expect-error CODE` | `set-cert`, `erase-cert`, `key-pair-info`: pass only on this SPDM ERROR (`SessionRequired`, `UnexpectedRequest`, `0x0b`, ...) |
 
 ### Root CA (certificate chain verification)
 
@@ -156,6 +162,49 @@ DISCOVERY waits for the full `-t` timeout.
 spdm-req-tool -e 33 -t 10000 -V 1.3 intel-mbx
 spdm-req-tool -e 33 -t 10000 -V 1.3 --mbx-read 0x60,0x01 --mbx-write 0x60=01 \
     --mbx-negative intel-mbx
+```
+
+### Certificate provisioning (SET_CERTIFICATE)
+
+`set-cert` writes a certificate chain to `-s SLOT` and `erase-cert` erases it
+(SPDM 1.3 Erase attribute). By default the request travels in a secure
+session: KEY_EXCHANGE / FINISH authenticated with the key of
+`--session-slot` (default 0, so an empty slot can be written), then
+SET_CERTIFICATE, then END_SESSION.
+
+* `--cert-chain` holds the certificates root first. The tool builds the SPDM
+  chain header (Length, Reserved, RootHash) with the negotiated hash. For an
+  alias-certificate responder this is the endorsement only (owner root,
+  intermediates, the certificate for the LDevID key); the responder appends
+  its own alias certificates.
+* SPDM 1.3 adds SetCertModel (`--cert-model`, default `alias`) and KeyPairID
+  (`--key-pair-id`, default 1). Both are only sent on a multi-key connection
+  (`MultiKeyConn: yes` in `connect`); otherwise they are 0 as the
+  specification requires. The requester accepts a multi-key connection when
+  the responder offers one (MULTI_KEY_CAP_NEG).
+* A request larger than the responder's DataTransferSize is sent with
+  CHUNK_SEND (`Transfer:` line). It must still fit the responder's
+  MaxSPDMmsgSize, otherwise libspdm stops before sending
+  (`peer buffer too small`).
+* A refusal names the SPDM ERROR, also when it comes inside a CHUNK_SEND_ACK.
+  With `--expect-error CODE` the step passes only on that error, so negative
+  tests exit with 0.
+* After a write or erase, later `digests`, `cert` and `challenge` in the same
+  run fetch the slots again.
+
+`key-pair-info` sends GET_KEY_PAIR_INFO (SPDM 1.3) for `--key-pair-id`, or
+for every key pair (1 to TotalKeyPairs), and shows the capabilities, key usage,
+algorithms, associated slot mask and public key.
+
+```sh
+# write the owner chain to slot 2, then check it against the owner root
+spdm-req-tool -e 32 -t 10000 -V 1.3 -s 2 --cert-chain owner-ecc-chain.der \
+    -r owner-ecc-root.der set-cert digests cert challenge
+# the same in the clear must be refused
+spdm-req-tool -e 32 -t 10000 -V 1.3 -s 2 --cert-chain owner-ecc-chain.der \
+    --set-cert-no-session --expect-error SessionRequired set-cert
+spdm-req-tool -e 32 -t 10000 -V 1.3 -s 2 erase-cert digests
+spdm-req-tool -e 32 -V 1.3 key-pair-info
 ```
 
 ### OCP EAT measurements

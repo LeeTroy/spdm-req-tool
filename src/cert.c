@@ -32,15 +32,24 @@ int cert_load_file(const char *path, struct cert_list *out)
 
     p = strstr((const char *)data, PEM_BEGIN);
     if (!p) {
-        /* DER: a single certificate starting with a SEQUENCE tag */
+        /* DER: one certificate or several concatenated, each a SEQUENCE */
+        const uint8_t *der;
+        size_t dlen;
+
         if (len < 4 || data[0] != 0x30) {
             free(data);
             return -EINVAL;
         }
-        out->der[0] = data;
-        out->len[0] = len;
-        out->count = 1;
-        return 0;
+        while (out->count < CERT_LIST_MAX &&
+               libspdm_x509_get_cert_from_cert_chain(data, len, out->count, &der, &dlen)) {
+            out->der[out->count] = malloc(dlen);
+            if (!out->der[out->count])
+                break;
+            memcpy(out->der[out->count], der, dlen);
+            out->len[out->count++] = dlen;
+        }
+        free(data);
+        return out->count ? 0 : -EINVAL;
     }
     while (p && out->count < CERT_LIST_MAX) {
         const char *b = p + strlen(PEM_BEGIN);
@@ -143,6 +152,38 @@ bool cert_chain_get(const uint8_t *chain, size_t len, uint32_t hash_size, int in
     if (!chain_certs(chain, len, hash_size, &certs, &clen))
         return false;
     return libspdm_x509_get_cert_from_cert_chain(certs, clen, index, der, der_len);
+}
+
+int cert_chain_build(const struct cert_list *l, uint32_t hash_algo, uint8_t **chain, size_t *len)
+{
+    uint32_t hs = libspdm_get_hash_size(hash_algo);
+    size_t total = 4 + hs, off;
+    uint8_t *c;
+    int i;
+
+    if (!l->count || !hs)
+        return -EINVAL;
+    for (i = 0; i < l->count; i++)
+        total += l->len[i];
+    if (total > SPDM_MAX_CERTIFICATE_CHAIN_SIZE)
+        return -E2BIG;
+    c = calloc(1, total);
+    if (!c)
+        return -ENOMEM;
+    c[0] = (uint8_t)total;
+    c[1] = (uint8_t)(total >> 8);
+    if (!libspdm_hash_all(hash_algo, l->der[0], l->len[0], c + 4)) {
+        free(c);
+        return -EINVAL;
+    }
+    off = 4 + hs;
+    for (i = 0; i < l->count; i++) {
+        memcpy(c + off, l->der[i], l->len[i]);
+        off += l->len[i];
+    }
+    *chain = c;
+    *len = total;
+    return 0;
 }
 
 int cert_chain_count(const uint8_t *chain, size_t len, uint32_t hash_size)

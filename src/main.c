@@ -44,6 +44,12 @@ struct tool {
     uint8_t mbx_write_len;
     bool mbx_negative;
     uint32_t mbx_seq;
+    const char *cert_chain_file; /* set-cert */
+    uint8_t cert_model;         /* set-cert SetCertModel */
+    int key_pair_id;            /* -1: set-cert 1, key-pair-info all */
+    uint8_t session_slot;       /* slot authenticating the set-cert / erase-cert session */
+    bool set_cert_no_session;
+    int expect_error;           /* -1: none, else the SPDM ERROR code a refusable step expects */
 
     /* state */
     bool connected;
@@ -246,6 +252,10 @@ static int step_connect(struct tool *t)
                  spdm_conn_u32(t->app.ctx, LIBSPDM_DATA_CAPABILITY_MAX_SPDM_MSG_SIZE));
     }
     add_selected_algos(t, res);
+    if (ver >= 0x13)
+        node_add(res, "MultiKeyConn", "%s",
+                 spdm_conn_u32(t->app.ctx, LIBSPDM_DATA_MULTI_KEY_CONN_RSP) & 0xff ?
+                 "yes (KeyPairID in use)" : "no");
     STEP_END(t, "connect", ST_OK, res, "Negotiated SPDM %u.%u", ver >> 4, ver & 0xf);
     return 0;
 }
@@ -1314,6 +1324,380 @@ static int step_intel_mbx(struct tool *t)
     return 0;
 }
 
+/* ------------------------------------------------------------ set-cert */
+
+/* The SPDM ERROR answering the last request: sent directly or, for a request
+ * split with CHUNK_SEND, inside the last CHUNK_SEND_ACK. */
+static bool last_error(struct tool *t, uint8_t *code, uint8_t *data)
+{
+    size_t hdr = spdm_conn_version(t->app.ctx) >= 0x14 ? 8 : 6, len;
+    const uint8_t *m;
+
+    m = decode_last_response(SPDM_CHUNK_SEND_ACK, &len);
+    if (m && len >= hdr + 4 && m[hdr + 1] == SPDM_ERROR) {
+        *code = m[hdr + 2];
+        *data = m[hdr + 3];
+        return true;
+    }
+    m = decode_last_response(SPDM_ERROR, &len);
+    if (m && len >= 4) {
+        *code = m[2];
+        *data = m[3];
+        return true;
+    }
+    return false;
+}
+
+static void forget_errors(void)
+{
+    decode_forget_response(SPDM_ERROR);
+    decode_forget_response(SPDM_CHUNK_SEND_ACK);
+}
+
+/* Outcome of a request the responder may refuse. Without --expect-error it
+ * passes when accepted; with it, only on that SPDM ERROR. For anything but a
+ * plain success the summary is written to msg. */
+static enum out_status refusable_status(struct tool *t, node_t *res, libspdm_return_t st,
+                                        char *msg, size_t size)
+{
+    bool failed = LIBSPDM_STATUS_IS_ERROR(st);
+    uint8_t code = 0, data = 0;
+    bool err = failed && last_error(t, &code, &data);
+    const char *want = t->expect_error >= 0 ? spdm_error_name((uint8_t)t->expect_error) : NULL;
+
+    msg[0] = 0;
+    if (err)
+        node_style(node_add(res, "Error", "SPDM ERROR 0x%02x %s (data 0x%02x)", code,
+                            spdm_error_name(code), data),
+                   code == t->expect_error ? NS_OK : NS_ERR);
+    if (!want) {
+        if (!failed)
+            return ST_OK;
+        if (err)
+            snprintf(msg, size, "refused: SPDM ERROR %s (0x%02x)", spdm_error_name(code), code);
+        else
+            snprintf(msg, size, "failed: %s", spdm_status_str(st));
+        return ST_FAIL;
+    }
+    if (err && code == t->expect_error) {
+        snprintf(msg, size, "refused with SPDM ERROR %s (0x%02x), as expected",
+                 spdm_error_name(code), code);
+        return ST_OK;
+    }
+    if (err)
+        snprintf(msg, size, "refused with SPDM ERROR %s (0x%02x), expected %s",
+                 spdm_error_name(code), code, want);
+    else if (failed)
+        snprintf(msg, size, "failed: %s, expected SPDM ERROR %s", spdm_status_str(st), want);
+    else
+        snprintf(msg, size, "accepted, expected SPDM ERROR %s", want);
+    return ST_FAIL;
+}
+
+/* MULTI_KEY_CONN_RSP: the responder identifies its keys by KeyPairID. */
+static bool multi_key_conn(struct tool *t)
+{
+    return spdm_conn_version(t->app.ctx) >= 0x13 &&
+           (spdm_conn_u32(t->app.ctx, LIBSPDM_DATA_MULTI_KEY_CONN_RSP) & 0xff);
+}
+
+static const char *cert_model_name(uint8_t m)
+{
+    return m == 0 ? "none" : m == 1 ? "DeviceCert" : m == 2 ? "AliasCert" :
+           m == 3 ? "GenericCert" : "?";
+}
+
+/* KEY_EXCHANGE / FINISH authenticated with --session-slot for set-cert and
+ * erase-cert. */
+static int setcert_session(struct tool *t, const char *id, uint32_t *sid)
+{
+    uint8_t slot = t->slot, hb = 0, meas_hash[LIBSPDM_MAX_HASH_SIZE];
+    libspdm_return_t st;
+    node_t *res;
+    char title[96];
+
+    if (!(peer_caps(t) & SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_EX_CAP) ||
+        t->sopts.no_session_caps) {
+        out_step_begin(id, "KEY_EXCHANGE / FINISH - secure session for SET_CERTIFICATE");
+        res = node_new("", NULL);
+        STEP_END(t, id, ST_FAIL, res, "responder has no KEY_EX_CAP (use --set-cert-no-session)");
+        return -1;
+    }
+    /* The session is authenticated with the certificate in --session-slot,
+     * which may differ from the slot being written. */
+    if (t->have_cert && t->slot != t->session_slot)
+        t->have_cert = false;
+    t->slot = t->session_slot;
+    if (ensure_cert(t) && !t->have_cert) {
+        t->slot = slot;
+        return -1;
+    }
+    snprintf(title, sizeof(title),
+             "KEY_EXCHANGE / FINISH - secure session for SET_CERTIFICATE (slot %u key)",
+             t->session_slot);
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    st = libspdm_start_session(t->app.ctx, false, NULL, 0, 0, t->session_slot, 0, sid, &hb,
+                               meas_hash);
+    t->slot = slot;
+    if (LIBSPDM_STATUS_IS_ERROR(st)) {
+        STEP_END(t, id, ST_FAIL, res, "session establishment failed: %s", spdm_status_str(st));
+        return -1;
+    }
+    node_style(node_add(res, "SessionID", "0x%08x", *sid), NS_HILITE);
+    STEP_END(t, id, t->chain_trusted ? ST_OK : ST_WARN, res, "Secure session 0x%08x established%s",
+             *sid, t->chain_trusted ? "" : " (responder identity not anchored in a trusted root)");
+    return 0;
+}
+
+static void setcert_end_session(struct tool *t, const char *id, uint32_t sid)
+{
+    libspdm_return_t st;
+    node_t *res;
+
+    out_step_begin(id, "END_SESSION - terminate secure session");
+    res = node_new("", NULL);
+    st = libspdm_stop_session(t->app.ctx, sid, 0);
+    STEP_END(t, id, LIBSPDM_STATUS_IS_ERROR(st) ? ST_FAIL : ST_OK, res, "%s",
+             LIBSPDM_STATUS_IS_ERROR(st) ? spdm_status_str(st) : "session closed");
+}
+
+/* SET_CERTIFICATE: writes the --cert-chain certificates (root first) to
+ * --slot, or erases the slot (SPDM 1.3), inside a secure session unless
+ * --set-cert-no-session. */
+static int step_set_cert(struct tool *t, bool erase)
+{
+    const char *id = erase ? "erase-cert" : "set-cert";
+    struct cert_list l = { 0 };
+    uint8_t *chain = NULL, attr = 0, kp, model;
+    size_t chain_len = 0;
+    uint32_t sid = 0, *psid = NULL;
+    enum out_status status;
+    libspdm_return_t st;
+    char title[112], msg[160];
+    bool multi_key;
+    node_t *res;
+    uint8_t ver;
+    int rc, i;
+
+    if (ensure_connected(t))
+        return -1;
+    ver = spdm_conn_version(t->app.ctx);
+    multi_key = multi_key_conn(t);
+    /* KeyPairID and SetCertModel exist from SPDM 1.3 and must be 0 unless the
+     * connection is multi-key. */
+    kp = multi_key ? (uint8_t)(t->key_pair_id < 0 ? 1 : t->key_pair_id) : 0;
+    model = multi_key && !erase ? t->cert_model : 0;
+
+    if (!erase) {
+        if (!t->cert_chain_file) {
+            out_step_begin(id, "SET_CERTIFICATE - provision a certificate chain");
+            res = node_new("", NULL);
+            STEP_END(t, id, ST_FAIL, res, "no --cert-chain given");
+            return -1;
+        }
+        rc = cert_load_file(t->cert_chain_file, &l);
+        if (!rc)
+            rc = cert_chain_build(&l, neg_hash(t), &chain, &chain_len);
+        if (rc) {
+            out_step_begin(id, "SET_CERTIFICATE - provision a certificate chain");
+            res = node_new("", NULL);
+            STEP_END(t, id, ST_FAIL, res, "cannot use %s: %s", t->cert_chain_file,
+                     rc == -EINVAL ? "no PEM/DER certificate" :
+                     rc == -E2BIG ? "chain longer than 65535 bytes" : strerror(-rc));
+            cert_list_free(&l);
+            return -1;
+        }
+    } else if (ver < 0x13) {
+        out_step_begin(id, "SET_CERTIFICATE (Erase) - erase a certificate slot");
+        res = node_new("", NULL);
+        STEP_END(t, id, ST_FAIL, res, "Erase needs SPDM 1.3 or later (negotiated %u.%u)",
+                 ver >> 4, ver & 0xf);
+        return -1;
+    }
+
+    if (!t->set_cert_no_session) {
+        if (setcert_session(t, erase ? "erase-cert-session" : "set-cert-session", &sid)) {
+            free(chain);
+            cert_list_free(&l);
+            return -1;
+        }
+        psid = &sid;
+    }
+
+    snprintf(title, sizeof(title), "SET_CERTIFICATE%s - %s slot %u (%s)",
+             erase ? " (Erase)" : "", erase ? "erase" : "write", t->slot,
+             psid ? "in secure session" : "in the clear");
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    node_add(res, "SlotID", "%u", t->slot);
+    if (ver >= 0x13) {
+        node_add(res, "KeyPairID", "%u%s", kp, multi_key ? "" : " (not a multi-key connection)");
+        if (!erase)
+            node_add(res, "SetCertModel", "%u (%s)", model, cert_model_name(model));
+    }
+    if (!erase) {
+        node_t *c = node_add(res, "CertChain", "%zu bytes, %d certificate(s) from %s", chain_len,
+                             l.count, t->cert_chain_file);
+        uint32_t limit = spdm_conn_u32(t->app.ctx, LIBSPDM_DATA_CAPABILITY_DATA_TRANSFER_SIZE);
+
+        node_add_hex(c, "RootHash", chain + 4, libspdm_get_hash_size(neg_hash(t)));
+        for (i = 0; i < l.count; i++) {
+            char key[24], subj[256];
+
+            snprintf(key, sizeof(key), "Cert%d", i);
+            cert_subject(l.der[i], l.len[i], subj, sizeof(subj));
+            node_add(c, key, "%s (%zu bytes)", subj, l.len[i]);
+        }
+        if (limit && 4 + chain_len > limit)
+            node_add(res, "Transfer", "CHUNK_SEND (request %zu bytes > DataTransferSize %u)",
+                     4 + chain_len, limit);
+    }
+    if (erase)
+        attr = SPDM_SET_CERTIFICATE_REQUEST_ATTRIBUTES_ERASE;
+    else
+        attr = (uint8_t)(model << SPDM_SET_CERTIFICATE_REQUEST_ATTRIBUTES_CERT_MODEL_OFFSET);
+    forget_errors();
+    st = libspdm_set_certificate_ex(t->app.ctx, psid, t->slot, erase ? NULL : chain,
+                                    erase ? 0 : chain_len, ver >= 0x13 ? attr : 0, kp);
+    status = refusable_status(t, res, st, msg, sizeof(msg));
+    if (msg[0])
+        STEP_END(t, id, status, res, "%s", msg);
+    else
+        STEP_END(t, id, status, res, "slot %u %s", t->slot,
+                 erase ? "erased" : "written (SET_CERTIFICATE_RSP)");
+    if (!LIBSPDM_STATUS_IS_ERROR(st)) {
+        /* the slot changed: later digests / cert / challenge refetch */
+        t->digests_done = false;
+        t->have_cert = false;
+    }
+    free(chain);
+    cert_list_free(&l);
+    if (psid)
+        setcert_end_session(t, erase ? "erase-cert-end-session" : "set-cert-end-session", sid);
+    return status == ST_FAIL ? -1 : 0;
+}
+
+/* ------------------------------------------------------- key-pair-info */
+
+static const char *key_pair_cap_name(uint32_t bit)
+{
+    switch (bit) {
+    case SPDM_KEY_PAIR_CAP_GEN_KEY_CAP: return "GenKeyCap";
+    case SPDM_KEY_PAIR_CAP_ERASABLE_CAP: return "ErasableCap";
+    case SPDM_KEY_PAIR_CAP_CERT_ASSOC_CAP: return "CertAssocCap";
+    case SPDM_KEY_PAIR_CAP_KEY_USAGE_CAP: return "KeyUsageCap";
+    case SPDM_KEY_PAIR_CAP_ASYM_ALGO_CAP: return "AsymAlgoCap";
+    case SPDM_KEY_PAIR_CAP_SHAREABLE_CAP: return "ShareableCap";
+    default: return NULL;
+    }
+}
+
+static const char *key_usage_name(uint32_t bit)
+{
+    switch (bit) {
+    case SPDM_KEY_USAGE_BIT_MASK_KEY_EX_USE: return "KeyExUse";
+    case SPDM_KEY_USAGE_BIT_MASK_CHALLENGE_USE: return "ChallengeUse";
+    case SPDM_KEY_USAGE_BIT_MASK_MEASUREMENT_USE: return "MeasurementUse";
+    case SPDM_KEY_USAGE_BIT_MASK_ENDPOINT_INFO_USE: return "EndpointInfoUse";
+    case SPDM_KEY_USAGE_BIT_MASK_STANDARDS_KEY_USE: return "StandardsKeyUse";
+    case SPDM_KEY_USAGE_BIT_MASK_VENDOR_KEY_USE: return "VendorKeyUse";
+    default: return NULL;
+    }
+}
+
+/* KEY_PAIR_INFO uses its own asymmetric algorithm bits. */
+static const char *key_pair_asym_name(uint32_t bit)
+{
+    switch (bit) {
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_RSA2048: return "RSA2048";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_RSA3072: return "RSA3072";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_RSA4096: return "RSA4096";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_ECC256: return "ECC256";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_ECC384: return "ECC384";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_ECC521: return "ECC521";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_SM2: return "SM2";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_ED25519: return "Ed25519";
+    case SPDM_KEY_PAIR_ASYM_ALGO_CAP_ED448: return "Ed448";
+    default: return NULL;
+    }
+}
+
+static const char *key_pair_pqc_name(uint32_t bit)
+{
+    switch (bit) {
+    case SPDM_KEY_PAIR_PQC_ASYM_ALGO_CAP_ML_DSA_44: return "ML-DSA-44";
+    case SPDM_KEY_PAIR_PQC_ASYM_ALGO_CAP_ML_DSA_65: return "ML-DSA-65";
+    case SPDM_KEY_PAIR_PQC_ASYM_ALGO_CAP_ML_DSA_87: return "ML-DSA-87";
+    default: return NULL;
+    }
+}
+
+static node_t *add_bits(node_t *res, const char *key, uint32_t v, int width,
+                        const char *(*name)(uint32_t))
+{
+    char *s = bits_to_names(v, name);
+    node_t *n = node_add(res, key, "0x%0*x %s", width, v, s);
+
+    free(s);
+    return n;
+}
+
+/* GET_KEY_PAIR_INFO for one key pair; *total gets TotalKeyPairs. */
+static int key_pair_info_one(struct tool *t, uint8_t kp, uint8_t *total)
+{
+    uint16_t caps = 0, kuc = 0, cku = 0, pki_len = 1024;
+    uint32_t aac = 0, caa = 0, pqc_cap = 0, cur_pqc = 0;
+    uint8_t mask = 0, pki[1024];
+    enum out_status status;
+    libspdm_return_t st;
+    char id[32], title[64], msg[160];
+    node_t *res;
+
+    snprintf(id, sizeof(id), "key-pair-info-%u", kp);
+    snprintf(title, sizeof(title), "GET_KEY_PAIR_INFO - key pair %u", kp);
+    out_step_begin(id, title);
+    res = node_new("", NULL);
+    forget_errors();
+    st = libspdm_get_key_pair_info(t->app.ctx, NULL, kp, total, &caps, &kuc, &cku, &aac, &caa,
+                                   &pqc_cap, &cur_pqc, &mask, &pki_len, pki);
+    status = refusable_status(t, res, st, msg, sizeof(msg));
+    if (msg[0]) {
+        STEP_END(t, id, status, res, "%s", msg);
+        return LIBSPDM_STATUS_IS_ERROR(st) ? -1 : 0;
+    }
+    node_add(res, "TotalKeyPairs", "%u", *total);
+    add_bits(res, "Capabilities", caps, 4, key_pair_cap_name);
+    add_bits(res, "KeyUsageCapabilities", kuc, 4, key_usage_name);
+    node_style(add_bits(res, "CurrentKeyUsage", cku, 4, key_usage_name), NS_HILITE);
+    add_bits(res, "AsymAlgoCapabilities", aac, 8, key_pair_asym_name);
+    add_bits(res, "CurrentAsymAlgo", caa, 8, key_pair_asym_name);
+    if (spdm_conn_version(t->app.ctx) >= 0x14) {
+        add_bits(res, "PqcAsymAlgoCapabilities", pqc_cap, 8, key_pair_pqc_name);
+        add_bits(res, "CurrentPqcAsymAlgo", cur_pqc, 8, key_pair_pqc_name);
+    }
+    node_style(node_add(res, "AssocCertSlotMask", "0x%02x", mask), NS_HILITE);
+    node_add_hex(res, "PublicKeyInfo", pki, pki_len);
+    STEP_END(t, id, status, res, "key pair %u of %u: usage 0x%04x, slots 0x%02x", kp, *total,
+             cku, mask);
+    return 0;
+}
+
+static int step_key_pair_info(struct tool *t)
+{
+    uint8_t total = 0, kp;
+
+    if (ensure_connected(t))
+        return -1;
+    if (t->key_pair_id >= 0)
+        return key_pair_info_one(t, (uint8_t)t->key_pair_id, &total);
+    if (key_pair_info_one(t, 1, &total))
+        return -1;
+    for (kp = 2; kp <= total && kp != 0; kp++)
+        key_pair_info_one(t, kp, &total);
+    return 0;
+}
+
 /* ---------------------------------------------------------------- loop */
 
 static void on_signal(int sig)
@@ -1350,6 +1734,9 @@ static void usage(FILE *f)
 "  session       KEY_EXCHANGE+FINISH, HEARTBEAT, KEY_UPDATE, measurements, END_SESSION\n"
 "  caliptra-vdm  Caliptra VDM GET_ATTESTATION and EXPORT_ATTESTED_CSR in a secure session\n"
 "  intel-mbx     Intel PFR mailbox reads in the clear and in a secure session\n"
+"  set-cert      SET_CERTIFICATE: write --cert-chain to --slot (in a secure session)\n"
+"  erase-cert    SET_CERTIFICATE with Erase (SPDM 1.3): erase --slot (in a secure session)\n"
+"  key-pair-info GET_KEY_PAIR_INFO for --key-pair-id, or every key pair\n"
 "  all           connect digests cert challenge meas session\n"
 "\n"
 "Connection:\n"
@@ -1380,6 +1767,18 @@ static void usage(FILE *f)
 "      --mbx-write A=HEX    intel-mbx: also write HEX bytes to register A in the session,\n"
 "                           then read it back (0x09 and 0x80 to 0x60 are refused)\n"
 "      --mbx-negative       intel-mbx: also send messages the responder must refuse\n"
+"      --cert-chain FILE    set-cert: certificates to write, root first (PEM bundle or\n"
+"                           concatenated DER); the SPDM chain header and root hash are\n"
+"                           built with the negotiated hash\n"
+"      --cert-model M       set-cert SetCertModel: none, device, alias, generic (default alias)\n"
+"      --key-pair-id N      set-cert/erase-cert KeyPairID (default 1; 0 is sent when the\n"
+"                           connection is not multi-key); key-pair-info: only key pair N\n"
+"      --session-slot N     slot whose key authenticates the set-cert/erase-cert session\n"
+"                           (default 0)\n"
+"      --set-cert-no-session  send SET_CERTIFICATE in the clear (negative test)\n"
+"      --expect-error CODE  set-cert, erase-cert, key-pair-info: pass only if the responder\n"
+"                           answers with this SPDM ERROR (name such as SessionRequired, or\n"
+"                           a number)\n"
 "\n"
 "Certificates:\n"
 "  -r, --root-ca FILE       trusted root CA (PEM or DER), may be repeated; the chain\n"
@@ -1409,7 +1808,8 @@ static void usage(FILE *f)
 "  spdm-req-tool -e 42 -v connect cert\n"
 "  spdm-req-tool -e 42 get-root-ca -R ast1080-root.pem\n"
 "  spdm-req-tool -e 42 -r ast1080-root.pem challenge meas\n"
-"  spdm-req-tool -e 42 -r ast1080-root.pem --loop 5 challenge meas\n");
+"  spdm-req-tool -e 42 -r ast1080-root.pem --loop 5 challenge meas\n"
+"  spdm-req-tool -e 42 -s 2 --cert-chain owner-ecc-chain.der set-cert digests cert\n");
 }
 
 static int parse_algo_list(const char *list, const char *(*name)(uint32_t), uint32_t *out)
@@ -1506,10 +1906,47 @@ bad:
     return -1;
 }
 
+static int parse_cert_model(struct tool *t, const char *arg)
+{
+    static const char *names[] = { "none", "device", "alias", "generic" };
+    uint8_t i;
+
+    for (i = 0; i < 4; i++)
+        if (!strcasecmp(arg, names[i])) {
+            t->cert_model = i;
+            return 0;
+        }
+    fprintf(stderr, "invalid --cert-model '%s' (none, device, alias, generic)\n", arg);
+    return -1;
+}
+
+/* --expect-error: an SPDM error code name (as printed) or number */
+static int parse_error_code(struct tool *t, const char *arg)
+{
+    char *end;
+    unsigned long v = strtoul(arg, &end, 0);
+    int i;
+
+    if (!*end && end != arg && v <= 0xff) {
+        t->expect_error = (int)v;
+        return 0;
+    }
+    for (i = 1; i <= 0xff; i++)
+        if (strcmp(spdm_error_name((uint8_t)i), "Reserved") &&
+            !strcasecmp(arg, spdm_error_name((uint8_t)i))) {
+            t->expect_error = i;
+            return 0;
+        }
+    fprintf(stderr, "unknown SPDM error code '%s' (e.g. SessionRequired, UnexpectedRequest, 0x0b)\n",
+            arg);
+    return -1;
+}
+
 enum {
     OPT_ASYM = 0x100, OPT_PQC_ASYM, OPT_HASH, OPT_DHE, OPT_KEM, OPT_AEAD, OPT_NO_MEAS_SIG, OPT_MEAS_SUMMARY,
     OPT_COLOR, OPT_VERSION, OPT_NO_SESSION, OPT_LOOP_FULL, OPT_CSR_KEY_ID, OPT_MBX_READ,
-    OPT_MBX_WRITE, OPT_MBX_NEGATIVE,
+    OPT_MBX_WRITE, OPT_MBX_NEGATIVE, OPT_CERT_CHAIN, OPT_CERT_MODEL, OPT_KEY_PAIR_ID,
+    OPT_SESSION_SLOT, OPT_SET_CERT_NO_SESSION, OPT_EXPECT_ERROR,
 };
 
 static const struct option long_opts[] = {
@@ -1547,6 +1984,12 @@ static const struct option long_opts[] = {
     { "mbx-read", required_argument, NULL, OPT_MBX_READ },
     { "mbx-write", required_argument, NULL, OPT_MBX_WRITE },
     { "mbx-negative", no_argument, NULL, OPT_MBX_NEGATIVE },
+    { "cert-chain", required_argument, NULL, OPT_CERT_CHAIN },
+    { "cert-model", required_argument, NULL, OPT_CERT_MODEL },
+    { "key-pair-id", required_argument, NULL, OPT_KEY_PAIR_ID },
+    { "session-slot", required_argument, NULL, OPT_SESSION_SLOT },
+    { "set-cert-no-session", no_argument, NULL, OPT_SET_CERT_NO_SESSION },
+    { "expect-error", required_argument, NULL, OPT_EXPECT_ERROR },
     { 0 }
 };
 
@@ -1572,6 +2015,12 @@ static int run_command(struct tool *t, const char *cmd)
         return step_caliptra_vdm(t);
     if (!strcmp(cmd, "intel-mbx"))
         return step_intel_mbx(t);
+    if (!strcmp(cmd, "set-cert"))
+        return step_set_cert(t, false);
+    if (!strcmp(cmd, "erase-cert"))
+        return step_set_cert(t, true);
+    if (!strcmp(cmd, "key-pair-info"))
+        return step_key_pair_info(t);
     if (!strcmp(cmd, "all")) {
         /* Later loop rounds reuse the connection and certificate chain and
          * only repeat the nonce-based steps (unless --loop-full). */
@@ -1594,7 +2043,8 @@ static bool valid_command(const char *c)
 {
     static const char *cmds[] = { "version", "connect", "digests", "cert", "get-root-ca",
                                   "challenge", "meas", "session", "caliptra-vdm",
-                                  "intel-mbx", "all" };
+                                  "intel-mbx", "set-cert", "erase-cert", "key-pair-info",
+                                  "all" };
     size_t i;
 
     for (i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
@@ -1617,6 +2067,9 @@ int main(int argc, char **argv)
     t.meas_summary = SPDM_CHALLENGE_REQUEST_ALL_MEASUREMENTS_HASH;
     t.csr_key_id = 1;
     t.mbx_write_addr = -1;
+    t.cert_model = SPDM_CERTIFICATE_INFO_CERT_MODEL_ALIAS_CERT;
+    t.key_pair_id = -1;
+    t.expect_error = -1;
 
     while ((opt = getopt_long(argc, argv, "e:n:i:L:t:V:s:m:r:R:C:l:c:vxjqh", long_opts, NULL)) != -1) {
         switch (opt) {
@@ -1727,6 +2180,32 @@ int main(int argc, char **argv)
                 return 2;
             break;
         case OPT_MBX_NEGATIVE: t.mbx_negative = true; break;
+        case OPT_CERT_CHAIN: t.cert_chain_file = optarg; break;
+        case OPT_CERT_MODEL:
+            if (parse_cert_model(&t, optarg))
+                return 2;
+            break;
+        case OPT_KEY_PAIR_ID:
+        case OPT_SESSION_SLOT: {
+            char *end;
+            unsigned long v = strtoul(optarg, &end, 0);
+
+            if (*end || v > (opt == OPT_KEY_PAIR_ID ? 255u : 7u)) {
+                fprintf(stderr, "invalid --%s '%s'\n",
+                        opt == OPT_KEY_PAIR_ID ? "key-pair-id" : "session-slot", optarg);
+                return 2;
+            }
+            if (opt == OPT_KEY_PAIR_ID)
+                t.key_pair_id = (int)v;
+            else
+                t.session_slot = (uint8_t)v;
+            break;
+        }
+        case OPT_SET_CERT_NO_SESSION: t.set_cert_no_session = true; break;
+        case OPT_EXPECT_ERROR:
+            if (parse_error_code(&t, optarg))
+                return 2;
+            break;
         case 'C': t.save_chain = optarg; break;
         case 'v': verbose++; break;
         case 'x': hex = true; break;

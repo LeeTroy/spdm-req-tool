@@ -1219,6 +1219,98 @@ node_t *spdm_decode(void *ctx, bool is_request, const uint8_t *msg, size_t len)
         take_hex(&r, "Chunk", csize);
         break;
     }
+    case SPDM_CHUNK_SEND: {
+        bool ok = true;
+        uint32_t seq, csize;
+
+        if (ver >= 0x14) {
+            seq = take32(&r, &ok);
+        } else {
+            seq = take16(&r, &ok);
+            take16(&r, &ok);
+        }
+        csize = take32(&r, &ok);
+        node_add(root, "LastChunk", "%s", p1 & 1 ? "yes" : "no");
+        node_add(root, "Handle", "0x%02x", p2);
+        if (!ok)
+            break;
+        node_add(root, "ChunkSeqNo", "%u", seq);
+        node_add(root, "ChunkSize", "%u", csize);
+        if (seq == 0) {
+            uint32_t total = take32(&r, &ok);
+
+            if (ok)
+                node_add(root, "LargeMessageSize", "%u", total);
+        }
+        take_hex(&r, "Chunk", csize);
+        break;
+    }
+    case SPDM_CHUNK_SEND_ACK: {
+        bool ok = true;
+        uint32_t seq = ver >= 0x14 ? take32(&r, &ok) : take16(&r, &ok);
+
+        node_add(root, "EarlyErrorDetected", "%s", p1 & 1 ? "yes" : "no");
+        node_add(root, "Handle", "0x%02x", p2);
+        if (ok)
+            node_add(root, "ChunkSeqNo", "%u", seq);
+        if (r.len - r.off >= 4 && msg[r.off + 1] == SPDM_ERROR)
+            node_style(node_add(root, "ResponseToLargeRequest", "ERROR %s (0x%02x, data 0x%02x)",
+                                spdm_error_name(msg[r.off + 2]), msg[r.off + 2],
+                                msg[r.off + 3]), NS_ERR);
+        else if (r.len - r.off >= 2)
+            node_add(root, "ResponseToLargeRequest", "%s (%zu bytes)",
+                     spdm_code_name(msg[r.off + 1]), r.len - r.off);
+        r.off = r.len;
+        break;
+    }
+    case SPDM_SET_CERTIFICATE:
+        node_add(root, "SlotID", "%u", p1 & 0xf);
+        if (ver >= 0x13) {
+            node_add(root, "SetCertModel", "%u (%s)", (p1 >> 4) & 7,
+                     ((p1 >> 4) & 7) == 1 ? "DeviceCert" : ((p1 >> 4) & 7) == 2 ? "AliasCert" :
+                     ((p1 >> 4) & 7) == 3 ? "GenericCert" : "none");
+            node_add(root, "Erase", "%s", p1 & 0x80 ? "yes" : "no");
+            node_add(root, "KeyPairID", "%u", p2);
+        }
+        if (r.len - r.off >= 4)
+            node_add(root, "CertChain", "%zu bytes, Length field %u", r.len - r.off,
+                     msg[r.off] | msg[r.off + 1] << 8);
+        r.off = r.len;
+        break;
+    case SPDM_SET_CERTIFICATE_RSP:
+        node_add(root, "SlotID", "%u", p1 & 0xf);
+        break;
+    case SPDM_GET_KEY_PAIR_INFO: {
+        bool ok = true;
+        uint8_t id = take8(&r, &ok);
+
+        if (ok)
+            node_add(root, "KeyPairID", "%u", id);
+        break;
+    }
+    case SPDM_KEY_PAIR_INFO: {
+        bool ok = true;
+        uint8_t total = take8(&r, &ok), id = take8(&r, &ok);
+        uint16_t cap = take16(&r, &ok), kuc = take16(&r, &ok), cku = take16(&r, &ok);
+        uint32_t aac = take32(&r, &ok), caa = take32(&r, &ok);
+        uint16_t pkl = take16(&r, &ok);
+        uint8_t mask = take8(&r, &ok);
+
+        if (!ok)
+            break;
+        node_add(root, "TotalKeyPairs", "%u", total);
+        node_add(root, "KeyPairID", "%u", id);
+        node_add(root, "Capabilities", "0x%04x", cap);
+        node_add(root, "KeyUsageCapabilities", "0x%04x", kuc);
+        node_add(root, "CurrentKeyUsage", "0x%04x", cku);
+        node_add(root, "AsymAlgoCapabilities", "0x%08x", aac);
+        node_add(root, "CurrentAsymAlgo", "0x%08x", caa);
+        node_add(root, "AssocCertSlotMask", "0x%02x", mask);
+        take_hex(&r, "PublicKeyInfo", pkl);
+        if (r.off < r.len)
+            take_hex(&r, "PqcAsymAlgo", r.len - r.off);
+        break;
+    }
     case SPDM_VENDOR_DEFINED_REQUEST:
     case SPDM_VENDOR_DEFINED_RESPONSE:
         dec_vendor(&r);
