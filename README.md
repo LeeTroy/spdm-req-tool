@@ -1142,6 +1142,37 @@ signature, or 6353 bytes with ML-DSA-87, which needs CHUNK_GET. `-v` decodes
 both ExchangeData fields. The decoder does not reassemble chunked responses,
 so a chunked KEY_EXCHANGE_RSP is shown as raw chunks.
 
+### SET_CERTIFICATE test (test responder)
+
+With `-S` the test responder accepts SET_CERTIFICATE for slots 2 and 3 and
+answers GET_KEY_PAIR_INFO. It is a multi-key responder (MULTI_KEY_CAP_NEG)
+whose slots use key pair 1. libspdm's sample library writes the chain without
+its SPDM header to `slot_id_<N>_cert_chain.der` in the current directory, and
+the slot is served until the responder exits. Outside a session it refuses
+with UnexpectedRequest.
+
+```sh
+# from the host
+scp -O build-aarch64/spdm-test-responder root@10.0.0.120:/tmp/spdm-test/
+scp -O libspdm/unit_test/sample_key/ecp384/* root@10.0.0.120:/tmp/spdm-test/ecp384/
+# on the BMC (11 is a local EID of the BMC)
+cd /tmp/spdm-test && ./spdm-test-responder -k /tmp/spdm-test -e 11 -S &
+T="/tmp/spdm-req-tool -e 11 -r ecp384/ca.cert.der"
+$T -V 1.3 -s 2 --cert-model device --cert-chain ecp384/bundle_responder.certchain.der set-cert
+$T -V 1.3 -s 2 --cert-chain ecp384/bundle_responder.certchain.der --set-cert-no-session \
+    --expect-error UnexpectedRequest set-cert
+$T -V 1.3 -s 2 erase-cert
+$T -V 1.3 key-pair-info
+kill %1
+```
+
+Verified at SPDM 1.2 and 1.3: the chain written to slot 2 equals the bundle;
+erase works at 1.3 and is refused locally at 1.2; a 15 KB chain goes out in
+four CHUNK_SENDs inside the session; KeyPairID 0 on the multi-key connection
+is refused by libspdm before sending. libspdm's sample library rejects the
+alias partial chain (`bundle_responder.certchain_alias_cert_partial_set.der`)
+with ERROR Unspecified.
+
 ## Notes
 
 * `cert.c` formats X.509 fields itself rather than using OpenSSL's

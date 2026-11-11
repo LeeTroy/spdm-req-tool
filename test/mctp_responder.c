@@ -5,7 +5,7 @@
  * real device.
  *
  *   spdm-test-responder [-k KEYDIR] [-e EID] [-p mldsa44|mldsa65|mldsa87]
- *                       [-K mlkem512|mlkem768|mlkem1024]
+ *                       [-K mlkem512|mlkem768|mlkem1024] [-S]
  *
  * -e binds to that local EID only, so the responder can run next to a daemon
  * (e.g. spdmd) that already holds the any-address SPDM binding.
@@ -17,6 +17,10 @@
  *   spdm-req-tool -e <local-eid> -r KEYDIR/mldsa65/ca.cert.der all
  * With -K the responder also offers that ML-KEM and prefers it over its DHE
  * group (secp384r1) for KEY_EXCHANGE.
+ * With -S it also accepts SET_CERTIFICATE for slots 2 and 3 (in a secure
+ * session; the chain goes to slot_id_N_cert_chain.der in the current
+ * directory) and answers GET_KEY_PAIR_INFO, as a multi-key responder
+ * (MULTI_KEY_CAP_NEG) whose slot 0 uses key pair 1.
  */
 #include <errno.h>
 #include <getopt.h>
@@ -160,10 +164,11 @@ int main(int argc, char **argv)
     uint32_t pqc = 0;
     uint32_t kem = 0;
     bool pqc_first = true;
+    bool set_cert = false;
     bool ok;
     int opt;
 
-    while ((opt = getopt(argc, argv, "k:e:p:K:")) != -1) {
+    while ((opt = getopt(argc, argv, "k:e:p:K:S")) != -1) {
         if (opt == 'k')
             g_key_dir = optarg;
         else if (opt == 'e')
@@ -180,9 +185,11 @@ int main(int argc, char **argv)
             kem = SPDM_ALGORITHMS_KEM_ALG_ML_KEM_768;
         else if (opt == 'K' && !strcmp(optarg, "mlkem1024"))
             kem = SPDM_ALGORITHMS_KEM_ALG_ML_KEM_1024;
+        else if (opt == 'S')
+            set_cert = true;
         else {
             fprintf(stderr, "usage: %s [-k keydir] [-e eid] [-p mldsa44|mldsa65|mldsa87] "
-                    "[-K mlkem512|mlkem768|mlkem1024]\n", argv[0]);
+                    "[-K mlkem512|mlkem768|mlkem1024] [-S]\n", argv[0]);
             return 2;
         }
     }
@@ -224,7 +231,10 @@ int main(int argc, char **argv)
                    SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_EX_CAP |
                    SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_HBEAT_CAP |
                    SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_UPD_CAP |
-                   SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CHUNK_CAP));
+                   SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CHUNK_CAP |
+                   (set_cert ? SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_SET_CERT_CAP |
+                               SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_GET_KEY_PAIR_INFO_CAP |
+                               SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MULTI_KEY_CAP_NEG : 0)));
     SET(LIBSPDM_DATA_MEASUREMENT_SPEC, (uint8_t)SPDM_MEASUREMENT_SPECIFICATION_DMTF);
     SET(LIBSPDM_DATA_MEASUREMENT_HASH_ALGO,
         (uint32_t)SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_384);
@@ -238,7 +248,7 @@ int main(int argc, char **argv)
     SET(LIBSPDM_DATA_KEY_SCHEDULE, (uint16_t)SPDM_ALGORITHMS_KEY_SCHEDULE_SPDM);
     SET(LIBSPDM_DATA_OTHER_PARAMS_SUPPORT, (uint8_t)SPDM_ALGORITHMS_OPAQUE_DATA_FORMAT_1);
     SET(LIBSPDM_DATA_HEARTBEAT_PERIOD, (uint8_t)30);
-    SET(LIBSPDM_DATA_LOCAL_SUPPORTED_SLOT_MASK, (uint8_t)0x01);
+    SET(LIBSPDM_DATA_LOCAL_SUPPORTED_SLOT_MASK, (uint8_t)(set_cert ? 0x0d : 0x01));
     if (pqc || kem)
         SET(LIBSPDM_DATA_ALGO_PRIORITY_PQC_FIRST, pqc_first);
     if (kem)
@@ -264,9 +274,21 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Slots 2 and 3 report the same key once SET_CERTIFICATE filled them. */
+    for (int slot = 0; set_cert && slot < 4; slot += slot ? 1 : 2) {
+        param.additional_data[0] = (uint8_t)slot;
+        SET(LIBSPDM_DATA_LOCAL_KEY_PAIR_ID, (uint8_t)1);
+        SET(LIBSPDM_DATA_LOCAL_CERT_INFO, (uint8_t)(slot ? SPDM_CERTIFICATE_INFO_CERT_MODEL_ALIAS_CERT
+                                                         : SPDM_CERTIFICATE_INFO_CERT_MODEL_DEVICE_CERT));
+        SET(LIBSPDM_DATA_LOCAL_KEY_USAGE_BIT_MASK,
+            (uint16_t)(SPDM_KEY_USAGE_BIT_MASK_KEY_EX_USE | SPDM_KEY_USAGE_BIT_MASK_CHALLENGE_USE |
+                       SPDM_KEY_USAGE_BIT_MASK_MEASUREMENT_USE));
+    }
+
     fprintf(stderr, "spdm-test-responder: listening for MCTP type 5/6 "
-            "(%s sample keys from %s, %s)\n",
-            pqc ? "ML-DSA" : "ECDSA-P384", g_key_dir, kem ? "ML-KEM preferred" : "secp384r1");
+            "(%s sample keys from %s, %s%s)\n",
+            pqc ? "ML-DSA" : "ECDSA-P384", g_key_dir, kem ? "ML-KEM preferred" : "secp384r1",
+            set_cert ? ", SET_CERTIFICATE for slots 2 and 3" : "");
     for (;;) {
         libspdm_return_t st = libspdm_responder_dispatch_message(ctx);
 
